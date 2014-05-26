@@ -814,14 +814,10 @@ video_thread(void *arg)
 
 		// Did we get a video frame?
 		if (frameFinished) {
-       //     if (!(ff_on && (++is->p2 % 2 ))) {
-                printf("Not dropping .. \n");
                 pts = synchronize_video(is, pFrame, pts);
                 if (queue_picture(is, pFrame, pts) < 0) {
                     break;
                 }
-		    } else {
-                printf("Dropping .. \n");
 		    }
 		av_free_packet(packet);
 	}
