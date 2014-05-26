@@ -1,6 +1,5 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libavformat/avio.h>
 #include <libswscale/swscale.h>
 #include <libavutil/avstring.h>
 #include <libavutil/mathematics.h>
@@ -40,6 +39,7 @@ typedef enum {REGULAR, RED, GREEN, BLUE, BW} VIDEO_COLOR ;
 int curr_video_on = 1;
 int curr_audio_on = 1;
 int ff_on = 1;
+int last_played_video = 1;
 
 VIDEO_COLOR video_color = REGULAR;
 
@@ -125,6 +125,7 @@ SDL_Surface *screen;
  can be global in case we need it. */
 VideoState* global_video_state;
 VideoState* global_video_state2;
+VideoState* global_video_state3;
 
 AVPacket flush_pkt;
 
@@ -421,9 +422,16 @@ int audio_decode_frame(VideoState *is, double *pts_ptr) {
 	return 0;
 }
 
-void audio_callback(void *userdata, Uint8 *stream, int len) {
+void audio_callback(void* userdata, Uint8 *stream, int len) {
 
-	VideoState *is = (curr_audio_on == 1 ? global_video_state : global_video_state2);
+    VideoState* is;
+	if (curr_audio_on == 1) {
+        is = global_video_state;
+	} else if (curr_audio_on == 2) {
+        is = global_video_state2;
+    } else {
+        is = global_video_state3;
+    }
 	int len1, audio_size;
 	double pts;
 
@@ -740,6 +748,7 @@ synchronize_video(VideoState *is, AVFrame *src_frame, double pts)
 
 uint64_t global_video_pkt_pts = AV_NOPTS_VALUE;
 uint64_t global_video_pkt_pts2 = AV_NOPTS_VALUE;
+uint64_t global_video_pkt_pts3 = AV_NOPTS_VALUE;
 
 /* These are called whenever we allocate a frame
  * buffer. We use this to store the global_pts in
@@ -764,6 +773,17 @@ our_get_buffer2(struct AVCodecContext *c, AVFrame *pic)
 	pic->opaque = pts;
 	return ret;
 }
+
+int
+our_get_buffer3(struct AVCodecContext *c, AVFrame *pic)
+{
+	int ret = avcodec_default_get_buffer(c, pic);
+	uint64_t *pts = av_malloc(sizeof(uint64_t));
+	*pts = global_video_pkt_pts3;
+	pic->opaque = pts;
+	return ret;
+}
+
 void
 our_release_buffer(struct AVCodecContext *c, AVFrame *pic)
 {
@@ -795,8 +815,10 @@ video_thread(void *arg)
 		// Save global pts to be stored in pFrame in first call
 		if (is->id == 1)
 			global_video_pkt_pts = packet->pts;
-        else
+        else if (is->id == 2)
         	global_video_pkt_pts2 = packet->pts;
+        else
+            global_video_pkt_pts3 = packet->pts;
 		// Decode video frame
 		//len1 =
 		avcodec_decode_video2(is->video_st->codec, pFrame, &frameFinished,
@@ -920,6 +942,8 @@ decode_interrupt_cb(void *opaque)
         return (global_video_state && global_video_state->quit);
     else if (is->id == 2)
         return (global_video_state2 && global_video_state2->quit);
+    else if (is->id == 3)
+        return (global_video_state3 && global_video_state3->quit);
     else
         return -1;
 }
@@ -945,6 +969,9 @@ decode_thread(void *arg)
         global_video_state = is;
     } else if (is->id == 2) {
         global_video_state2 = is;
+    }
+    else if (is->id == 3) {
+        global_video_state3 = is;
     }
 
 	// will interrupt blocking functions if we quit!
@@ -1088,23 +1115,31 @@ reopen_audio()
     SDL_PauseAudio(0);
 }
 
+double calculate_pos() {
+    double result_pos = 0;
+    if (last_played_video == 1) {
+        return get_master_clock(global_video_state);
+    } else if (last_played_video == 2) {
+        return get_master_clock(global_video_state2);
+    } else {
+        return get_master_clock(global_video_state3);
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
 	SDL_Event event;
 	//double pts;
-	VideoState* is;
-    VideoState* is2;
+	VideoState* is = NULL;
+    VideoState* is2 = NULL;
+    VideoState* is3 = NULL;
+    VideoState* tempIs;
 
-	is = av_mallocz(sizeof(VideoState));
-    is2 = av_mallocz(sizeof(VideoState));
-
-	if (argc < 2) {
-		fprintf(stderr, "Usage: test <file>\n");
-		exit(1);
-	}
 	// Register all formats and codecs
 	av_register_all();
+
+//	av_register_protocol(NULL);
 
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
 		fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
@@ -1122,34 +1157,50 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-    av_strlcpy(is2->filename, argv[2], sizeof(is2->filename));
+    if (argc < 2) {
+		fprintf(stderr, "Usage: test <file>\n");
+		exit(1);
+	}
+	is = av_mallocz(sizeof(VideoState));
 	av_strlcpy(is->filename, argv[1], sizeof(is->filename));
-
-    is->id = 1;
-    is2->id = 2;
-
+	is->id = 1;
 	is->pictq_mutex = SDL_CreateMutex();
 	is->pictq_cond = SDL_CreateCond();
-    is2->pictq_mutex = SDL_CreateMutex();
-    is2->pictq_cond = SDL_CreateCond();
-
-    schedule_refresh(is2, 40);
-	schedule_refresh(is, 40);
-
 	is->av_sync_type = DEFAULT_AV_SYNC_TYPE;
-    is2->av_sync_type = DEFAULT_AV_SYNC_TYPE;
-
 	is->parse_tid = SDL_CreateThread(decode_thread, is);
-    is2->parse_tid = SDL_CreateThread(decode_thread,is2);
-
-	if (!is->parse_tid) {
+	schedule_refresh(is, 40);
+    if (!is->parse_tid) {
 		av_free(is);
 		return -1;
 	}
-    if (!is2->parse_tid) {
-        av_free(is2);
-        return -1;
-    }
+	if (argc >= 3) {
+        is2 = av_mallocz(sizeof(VideoState));
+        av_strlcpy(is2->filename, argv[2], sizeof(is2->filename));
+        is2->id = 2;
+        is2->pictq_mutex = SDL_CreateMutex();
+        is2->pictq_cond = SDL_CreateCond();
+        is2->av_sync_type = DEFAULT_AV_SYNC_TYPE;
+        is2->parse_tid = SDL_CreateThread(decode_thread, is2);
+        schedule_refresh(is2, 40);
+        if (!is2->parse_tid) {
+            av_free(is2);
+            return -1;
+        }
+        if (argc == 4) {
+            is3 = av_mallocz(sizeof(VideoState));
+            av_strlcpy(is3->filename, argv[3], sizeof(is3->filename));
+            is3->id = 3;
+            is3->pictq_mutex = SDL_CreateMutex();
+            is3->pictq_cond = SDL_CreateCond();
+            is3->av_sync_type = DEFAULT_AV_SYNC_TYPE;
+            is3->parse_tid = SDL_CreateThread(decode_thread, is3);
+            schedule_refresh(is3, 40);
+            if (!is3->parse_tid) {
+                av_free(is3);
+                return -1;
+            }
+        }
+	}
 	av_init_packet(&flush_pkt);
 	flush_pkt.data = (unsigned char *) "FLUSH";
 	for (;;) {
@@ -1165,52 +1216,67 @@ main(int argc, char *argv[])
                         incr = 10.0;
                         goto do_seek;
                     case SDLK_1:
-                        if (curr_video_on != 1 || curr_audio_on != 1) {
-                       //     reopen_audio();
+                        if (is != NULL && (curr_video_on != 1 || curr_audio_on != 1)) {
+                            reopen_audio();
                             curr_video_on = 1;
                             curr_audio_on = 1;
                             goto do_seek;
                         }
                         break;
                     case SDLK_2:
-                        if (curr_audio_on != 2 || curr_video_on != 2) {
-                     //       reopen_audio();
+                        if (is2 != NULL && (curr_audio_on != 2 || curr_video_on != 2)) {
+                            reopen_audio();
                             curr_video_on = 2;
                             curr_audio_on = 2;
                             goto do_seek;
                         }
                         break;
+                    case SDLK_3:
+                        if (is3 != NULL && (curr_audio_on != 3 || curr_video_on != 3)) {
+                            reopen_audio();
+                            curr_video_on = 3;
+                            curr_audio_on = 3;
+                            goto do_seek;
+                        }
+                        break;
                     case SDLK_4:
-                        if (curr_video_on != 1) {
+                        if (is != NULL &&curr_video_on != 1) {
                             curr_video_on = 1;
                             goto do_seek;
                         }
                         break;
                     case SDLK_5:
-                        if (curr_video_on != 2) {
+                        if (is2 != NULL && curr_video_on != 2) {
                             curr_video_on = 2;
                             goto do_seek;
                         }
                         break;
                     case SDLK_6:
-                        // turn on video3's video
+                        if (is3 != NULL && curr_video_on != 3) {
+                            curr_video_on = 3;
+                            goto do_seek;
+                        }
                         break;
                     case SDLK_7:
-                        if (curr_audio_on != 1) {
+                        if (is != NULL && curr_audio_on != 1) {
                       //      reopen_audio();
                             curr_audio_on = 1;
                             goto do_seek;
                         }
                         break;
                     case SDLK_8:
-                        if (curr_audio_on != 2) {
+                        if (is2 != NULL && curr_audio_on != 2) {
                       //      reopen_audio();
                             curr_audio_on = 2;
                             goto do_seek;
                         }
                         break;
                     case SDLK_9:
-                        // turn on video3's audio
+                        if (is3 != NULL && curr_audio_on != 3) {
+                      //      reopen_audio();
+                            curr_audio_on = 3;
+                            goto do_seek;
+                        }
                         break;
                     case SDLK_UP:
                         incr = 60.0;
@@ -1231,15 +1297,21 @@ main(int argc, char *argv[])
                         video_color = BW;
                         break;
                     do_seek:
-                    if (curr_video_on == 2 || curr_audio_on == 2) {
-                        pos = get_master_clock(global_video_state);
-                        stream_seek(global_video_state2,
-                                    (int64_t) (pos * AV_TIME_BASE), 1);
-                    }
+                    pos = calculate_pos();
                     if (curr_video_on == 1 || curr_audio_on == 1) {
-                        pos = get_master_clock(global_video_state2);
                         stream_seek(global_video_state,
                                     (int64_t) (pos * AV_TIME_BASE), 1);
+                        last_played_video = 1;
+                    }
+                    if (curr_video_on == 2 || curr_audio_on == 2) {
+                        stream_seek(global_video_state2,
+                                    (int64_t) (pos * AV_TIME_BASE), 1);
+                        last_played_video = 2;
+                    }
+                    if (curr_video_on == 3 || curr_audio_on == 3) {
+                        stream_seek(global_video_state3,
+                                    (int64_t) (pos * AV_TIME_BASE), 1);
+                        last_played_video = 3;
                     }
                         break;
                     default:
