@@ -1029,6 +1029,7 @@ decode_thread(void *arg)
                 if (is->audioq.size > MAX_AUDIOQ_SIZE && is->id != curr_audio_on) {
                     packet_queue_flush(&is->audioq);
                 }
+
 			SDL_Delay(10);
 			continue;
 		}
@@ -1164,33 +1165,53 @@ main(int argc, char *argv[])
                         incr = 10.0;
                         goto do_seek;
                     case SDLK_1:
-                        if (curr_video_on != 1 && curr_audio_on != 1) {
-                            reopen_audio();
+                        if (curr_video_on != 1 || curr_audio_on != 1) {
+                       //     reopen_audio();
                             curr_video_on = 1;
                             curr_audio_on = 1;
                             goto do_seek;
                         }
                         break;
                     case SDLK_2:
-                        if (curr_audio_on != 2 && curr_video_on != 2) {
-                            reopen_audio();
+                        if (curr_audio_on != 2 || curr_video_on != 2) {
+                     //       reopen_audio();
                             curr_video_on = 2;
                             curr_audio_on = 2;
                             goto do_seek;
                         }
                         break;
                     case SDLK_4:
-                        curr_audio_on = 1;
-                        goto do_seek;
+                        if (curr_video_on != 1) {
+                            curr_video_on = 1;
+                            goto do_seek;
+                        }
+                        break;
                     case SDLK_5:
-                        curr_audio_on = 2;
-                        goto do_seek;
+                        if (curr_video_on != 2) {
+                            curr_video_on = 2;
+                            goto do_seek;
+                        }
+                        break;
                     case SDLK_6:
-                        curr_video_on = 1;
-                        goto do_seek;
+                        // turn on video3's video
+                        break;
                     case SDLK_7:
-                        curr_video_on = 2;
-                        goto do_seek;
+                        if (curr_audio_on != 1) {
+                      //      reopen_audio();
+                            curr_audio_on = 1;
+                            goto do_seek;
+                        }
+                        break;
+                    case SDLK_8:
+                        if (curr_audio_on != 2) {
+                      //      reopen_audio();
+                            curr_audio_on = 2;
+                            goto do_seek;
+                        }
+                        break;
+                    case SDLK_9:
+                        // turn on video3's audio
+                        break;
                     case SDLK_UP:
                         incr = 60.0;
                         goto do_seek;
@@ -1210,11 +1231,12 @@ main(int argc, char *argv[])
                         video_color = BW;
                         break;
                     do_seek:
-                    if (curr_video_on == 2) {
+                    if (curr_video_on == 2 || curr_audio_on == 2) {
                         pos = get_master_clock(global_video_state);
                         stream_seek(global_video_state2,
                                     (int64_t) (pos * AV_TIME_BASE), 1);
-                    } else if (curr_video_on == 1) {
+                    }
+                    if (curr_video_on == 1 || curr_audio_on == 1) {
                         pos = get_master_clock(global_video_state2);
                         stream_seek(global_video_state,
                                     (int64_t) (pos * AV_TIME_BASE), 1);
