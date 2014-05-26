@@ -923,8 +923,10 @@ stream_component_open(VideoState *is, int stream_index)
             is->video_tid = SDL_CreateThread(video_thread, is);
             if (is->id == 1)
             	codecCtx->get_buffer = our_get_buffer;
-            else
+            else if (is->id == 2)
             	codecCtx->get_buffer = our_get_buffer2;
+            else
+                codecCtx->get_buffer = our_get_buffer3;
             codecCtx->release_buffer = our_release_buffer;
             break;
         default:
@@ -1116,7 +1118,6 @@ reopen_audio()
 }
 
 double calculate_pos() {
-    double result_pos = 0;
     if (last_played_video == 1) {
         return get_master_clock(global_video_state);
     } else if (last_played_video == 2) {
@@ -1217,7 +1218,7 @@ main(int argc, char *argv[])
                         goto do_seek;
                     case SDLK_1:
                         if (is != NULL && (curr_video_on != 1 || curr_audio_on != 1)) {
-                            reopen_audio();
+                      //      reopen_audio();
                             curr_video_on = 1;
                             curr_audio_on = 1;
                             goto do_seek;
@@ -1225,7 +1226,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_2:
                         if (is2 != NULL && (curr_audio_on != 2 || curr_video_on != 2)) {
-                            reopen_audio();
+                    //        reopen_audio();
                             curr_video_on = 2;
                             curr_audio_on = 2;
                             goto do_seek;
@@ -1233,7 +1234,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_3:
                         if (is3 != NULL && (curr_audio_on != 3 || curr_video_on != 3)) {
-                            reopen_audio();
+                     //       reopen_audio();
                             curr_video_on = 3;
                             curr_audio_on = 3;
                             goto do_seek;
