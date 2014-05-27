@@ -41,6 +41,8 @@ int curr_audio_on = 1;
 int ff_on = 1;
 int last_played_video = 1;
 
+SDL_mutex* mutex;
+
 VIDEO_COLOR video_color = REGULAR;
 
 typedef struct PacketQueue {
@@ -865,29 +867,23 @@ stream_component_open(VideoState *is, int stream_index)
 
 	if (codecCtx->codec_type == AVMEDIA_TYPE_AUDIO) {
 		// Set audio settings from codec info
-		wanted_spec.freq = codecCtx->sample_rate;
-		wanted_spec.format = AUDIO_S16SYS;
-		wanted_spec.channels = codecCtx->channels;
-		wanted_spec.silence = 0;
-		wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
-		wanted_spec.callback = audio_callback;
-		wanted_spec.userdata = is;
-		is->spec = wanted_spec;
+		init_spec(is, stream_index);
 
         if (is->id == 1) {
-            if (SDL_OpenAudio(&wanted_spec, &spec) < 0) {
+            if (SDL_OpenAudio(&is->spec, &spec) < 0) {
                 fprintf(stderr, "SDL_OpenAudio: %s\n", SDL_GetError());
                 return -1;
             }
         }
 		is->audio_hw_buf_size = spec.size;
 	}
+	SDL_LockMutex(mutex);
 	codec = avcodec_find_decoder(codecCtx->codec_id);
 	if (!codec || (avcodec_open2(codecCtx, codec, NULL) < 0)) {
 		fprintf(stderr, "Unsupported codec!\n");
 		return -1;
 	}
-
+	SDL_UnlockMutex(mutex);
 	switch (codecCtx->codec_type) {
         case AVMEDIA_TYPE_AUDIO:
             is->audioStream = stream_index;
@@ -979,6 +975,7 @@ decode_thread(void *arg)
 	// will interrupt blocking functions if we quit!
 	interupt_cb.callback = decode_interrupt_cb;
 	interupt_cb.opaque = is;
+	SDL_LockMutex(mutex);
 	if (avio_open2(&is->io_ctx, is->filename, 0, &interupt_cb, NULL)) {
 		fprintf(stderr, "Cannot open I/O for %s\n", is->filename);
 		return -1;
@@ -993,6 +990,8 @@ decode_thread(void *arg)
 	// Retrieve stream information
 	if (avformat_find_stream_info(pFormatCtx, NULL) < 0)
 		return -1; // Couldn't find stream information
+
+    SDL_UnlockMutex(mutex);
 
 	// Dump information about file onto standard error
 	av_dump_format(pFormatCtx, 0, is->filename, 0);
@@ -1108,16 +1107,33 @@ stream_seek(VideoState *is, int64_t pos, int rel)
 }
 
 void
-reopen_audio()
+init_spec(VideoState* is, int streamIndex)
 {
-    VideoState* is = (curr_audio_on == 1 ? global_video_state : global_video_state2);
+    AVFormatContext *pFormatCtx = is->pFormatCtx;
+    AVCodecContext* codecCtx;
+    codecCtx = pFormatCtx->streams[streamIndex]->codec;
+    (is->spec).freq = codecCtx->sample_rate;
+    (is->spec).format = AUDIO_S16SYS;
+    (is->spec).channels = codecCtx->channels;
+    (is->spec).silence = 0;
+    (is->spec).samples = SDL_AUDIO_BUFFER_SIZE;
+    (is->spec).callback = audio_callback;
+}
+
+void
+reopen_audio(VideoState* is)
+{
     SDL_AudioSpec spec;
     SDL_CloseAudio();
+    init_spec(is,is->audioStream);
     SDL_OpenAudio(&is->spec,&spec);
     SDL_PauseAudio(0);
 }
 
-double calculate_pos() {
+double
+calculate_pos()
+{
+
     if (last_played_video == 1) {
         return get_master_clock(global_video_state);
     } else if (last_played_video == 2) {
@@ -1125,6 +1141,19 @@ double calculate_pos() {
     } else {
         return get_master_clock(global_video_state3);
     }
+}
+
+void
+turn_screen_black()
+{
+    SDL_Rect r;
+    Uint32 clearColor;
+    r.x = r.y = 0;
+    r.w = screen->w;
+    r.h = screen->h;
+    clearColor = SDL_MapRGB(screen->format, 0, 0, 0);
+    SDL_FillRect(screen, &r, clearColor);
+    SDL_Flip(screen);
 }
 
 int
@@ -1137,6 +1166,7 @@ main(int argc, char *argv[])
     VideoState* is3 = NULL;
     VideoState* tempIs;
 
+    mutex = SDL_CreateMutex();
 	// Register all formats and codecs
 	av_register_all();
 
@@ -1218,25 +1248,28 @@ main(int argc, char *argv[])
                         goto do_seek;
                     case SDLK_1:
                         if (is != NULL && (curr_video_on != 1 || curr_audio_on != 1)) {
-                      //      reopen_audio();
+                            turn_screen_black();
                             curr_video_on = 1;
                             curr_audio_on = 1;
+                            reopen_audio(is);
                             goto do_seek;
                         }
                         break;
                     case SDLK_2:
                         if (is2 != NULL && (curr_audio_on != 2 || curr_video_on != 2)) {
-                    //        reopen_audio();
+                            turn_screen_black();
                             curr_video_on = 2;
                             curr_audio_on = 2;
+                            reopen_audio(is2);
                             goto do_seek;
                         }
                         break;
                     case SDLK_3:
                         if (is3 != NULL && (curr_audio_on != 3 || curr_video_on != 3)) {
-                     //       reopen_audio();
+                            turn_screen_black();
                             curr_video_on = 3;
                             curr_audio_on = 3;
+                            reopen_audio(is3);
                             goto do_seek;
                         }
                         break;
