@@ -1143,6 +1143,10 @@ calculate_pos()
     }
 }
 
+/*
+ * Used when switching between two videos (If the switched movie's dimensions are smaller than the new one's)
+ *
+*/
 void
 turn_screen_black()
 {
@@ -1154,6 +1158,24 @@ turn_screen_black()
     clearColor = SDL_MapRGB(screen->format, 0, 0, 0);
     SDL_FillRect(screen, &r, clearColor);
     SDL_Flip(screen);
+}
+
+int
+init_run_video(VideoState* is, const char* name, int id)
+{
+    av_strlcpy(is->filename, name, sizeof(is->filename));
+	is->id = id;
+	is->pictq_mutex = SDL_CreateMutex();
+	is->pictq_cond = SDL_CreateCond();
+	is->av_sync_type = DEFAULT_AV_SYNC_TYPE;
+	is->parse_tid = SDL_CreateThread(decode_thread, is);
+	schedule_refresh(is, 40);
+    if (!is->parse_tid) {
+		av_free(is);
+		return -1;
+	}
+
+	return 0;
 }
 
 int
@@ -1193,41 +1215,20 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 	is = av_mallocz(sizeof(VideoState));
-	av_strlcpy(is->filename, argv[1], sizeof(is->filename));
-	is->id = 1;
-	is->pictq_mutex = SDL_CreateMutex();
-	is->pictq_cond = SDL_CreateCond();
-	is->av_sync_type = DEFAULT_AV_SYNC_TYPE;
-	is->parse_tid = SDL_CreateThread(decode_thread, is);
-	schedule_refresh(is, 40);
-    if (!is->parse_tid) {
-		av_free(is);
-		return -1;
+	if (init_run_video(is,argv[1],1) < 0) {
+        printf("Failed to init video : %s \n", argv[1]);
+        return -1;
 	}
 	if (argc >= 3) {
         is2 = av_mallocz(sizeof(VideoState));
-        av_strlcpy(is2->filename, argv[2], sizeof(is2->filename));
-        is2->id = 2;
-        is2->pictq_mutex = SDL_CreateMutex();
-        is2->pictq_cond = SDL_CreateCond();
-        is2->av_sync_type = DEFAULT_AV_SYNC_TYPE;
-        is2->parse_tid = SDL_CreateThread(decode_thread, is2);
-        schedule_refresh(is2, 40);
-        if (!is2->parse_tid) {
-            av_free(is2);
+        if (init_run_video(is2,argv[2],2) < 0) {
+            printf("Failed to init video : %s \n", argv[2]);
             return -1;
         }
         if (argc == 4) {
             is3 = av_mallocz(sizeof(VideoState));
-            av_strlcpy(is3->filename, argv[3], sizeof(is3->filename));
-            is3->id = 3;
-            is3->pictq_mutex = SDL_CreateMutex();
-            is3->pictq_cond = SDL_CreateCond();
-            is3->av_sync_type = DEFAULT_AV_SYNC_TYPE;
-            is3->parse_tid = SDL_CreateThread(decode_thread, is3);
-            schedule_refresh(is3, 40);
-            if (!is3->parse_tid) {
-                av_free(is3);
+            if (init_run_video(is3,argv[3],3) < 0) {
+                printf("Failed to init video : %s \n", argv[3]);
                 return -1;
             }
         }
