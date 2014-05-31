@@ -3,9 +3,16 @@
 #include <libswscale/swscale.h>
 #include <libavutil/avstring.h>
 #include <libavutil/mathematics.h>
+#include <libavformat/avio.h>
 
 #include <SDL/SDL.h>
 #include <SDL/SDL_thread.h>
+
+#include <errno.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #ifdef __MINGW32__
 #undef main /* Prevents SDL from overriding main() */
@@ -34,16 +41,36 @@
 
 #define DEFAULT_AV_SYNC_TYPE AV_SYNC_VIDEO_MASTER
 
+#define SERVER_IP "127.0.0.1"
+#define DECR_BY 2
+
 typedef enum {REGULAR, RED, GREEN, BLUE, BW} VIDEO_COLOR ;
+
+AVFrame* YUV_TO_RGB(AVFrame* origin, AVCodecContext* pCodecCtx);
+AVFrame* RGB_TO_YUV(AVFrame* origin, AVCodecContext* pCodecCtx);
 
 int curr_video_on = 1;
 int curr_audio_on = 1;
 int ff_on = 1;
 int last_played_video = 1;
+int pp_on = 0;
 
 SDL_mutex* mutex;
 
+extern URLProtocol e2URLProtocol;
+extern int size;
+
 VIDEO_COLOR video_color = REGULAR;
+
+typedef struct Resized_Image {
+    int flag;
+    int width;
+    int height;
+    AVFrame* small_image;
+
+}Resized;
+
+Resized* res_image;
 
 typedef struct PacketQueue {
 	AVPacketList *first_pkt, *last_pkt;
@@ -130,6 +157,73 @@ VideoState* global_video_state2;
 VideoState* global_video_state3;
 
 AVPacket flush_pkt;
+
+void SaveFrame(AVFrame *pFrame, int width, int height, int iFrame) {
+  FILE *pFile;
+  char szFilename[32];
+  int  y;
+
+  // Open file
+  sprintf(szFilename, "frame%d.ppm", iFrame);
+  pFile=fopen(szFilename, "wb");
+  if(pFile==NULL)
+    return;
+
+  // Write header
+  fprintf(pFile, "P6\n%d %d\n255\n", width, height);
+
+  // Write pixel data
+  for(y=0; y<height; y++)
+    fwrite(pFrame->data[0]+y*pFrame->linesize[0], 1, width*3, pFile);
+
+  // Close file
+  fclose(pFile);
+}
+
+
+AVFrame*
+merge_frames (AVFrame* dest_image, VideoState* is1)
+{
+    AVFrame* pFrameRGB1, *pFrameRGB2;
+    pFrameRGB1 = YUV_TO_RGB(dest_image, is1->video_st[is1->videoStream].codec);
+    pFrameRGB2 = res_image->small_image;
+
+	if (pFrameRGB1 == NULL || pFrameRGB2 == NULL) {
+		return NULL;
+	}
+    for (int y = 0; y < res_image->height; ++y) {
+        uint8_t* s = (pFrameRGB1->data[0] + (y + 42) * pFrameRGB1->linesize[0]);
+	    uint8_t* s2 = (pFrameRGB2->data[0] + y * pFrameRGB2->linesize[0]);
+        for (int x = 0 ; x < res_image->width * 3 ; x += 3) {
+            *(s + x + 42 ) = *(s2 + x );
+            *(s + x + 43 ) = *(s2 + x + 1);
+		    *(s + x + 44 ) = *(s2 + x + 2);
+        }
+    }
+    return RGB_TO_YUV(pFrameRGB1, is1->video_st[is1->videoStream].codec);
+}
+
+void
+resize_image(AVFrame* image1, AVCodecContext* pCodecCtx_image1, AVCodecContext* pCodecCtx_image2)
+{
+    while (res_image->flag == 1);
+    res_image->small_image = avcodec_alloc_frame();
+    res_image->width = pCodecCtx_image1->width;
+    for (res_image->height = pCodecCtx_image1->height ; res_image->height > pCodecCtx_image2->height / DECR_BY ; res_image->height /= DECR_BY) {
+    	res_image->width /= DECR_BY;
+    }
+    res_image->width /= DECR_BY;
+    struct SwsContext* resize = sws_getContext(pCodecCtx_image1->width, pCodecCtx_image1->height,
+						 PIX_FMT_YUV420P, res_image->width, res_image->height,
+						 PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
+
+    int num_bytes = avpicture_get_size(PIX_FMT_RGB24, res_image->width, res_image->height);
+    uint8_t* frame2_buffer = (uint8_t *)av_malloc(num_bytes * sizeof(uint8_t));
+    avpicture_fill((AVPicture*)res_image->small_image, frame2_buffer, PIX_FMT_RGB24, res_image->width, res_image->height);
+    sws_scale(resize, image1->data, image1->linesize, 0, pCodecCtx_image1->height, res_image->small_image->data, res_image->small_image->linesize);
+    sws_freeContext(resize);
+    res_image->flag = 1;
+}
 
 AVFrame* YUV_TO_RGB(AVFrame* origin, AVCodecContext* pCodecCtx) {
     AVFrame* pFrameRGB;
@@ -609,6 +703,25 @@ void alloc_picture(void *userdata) {
 }
 
 AVFrame*
+handle_merge (AVFrame* origin, VideoState* is)
+{
+
+    if (pp_on && ((is->id - 1) == curr_video_on)) {
+        resize_image(origin, is->video_st[is->videoStream].codec,global_video_state->video_st[global_video_state->videoStream].codec);
+        return NULL;
+    } else if (pp_on && is->id == curr_video_on) {
+        while (!res_image->flag);
+        AVFrame* result = merge_frames(origin, is);
+        res_image->flag = 0;
+        av_free(res_image->small_image);
+        return result;
+    } else {
+        return NULL;
+    }
+
+}
+
+AVFrame*
 handle_color (AVFrame* origin, VideoState* is)
 {
     AVFrame* pFrameRGB;
@@ -645,7 +758,6 @@ handle_color (AVFrame* origin, VideoState* is)
 int
 queue_picture(VideoState *is, AVFrame *pFrame, double pts)
 {
-
 	VideoPicture *vp;
 	//int dst_pix_fmt;
 	AVPicture pict;
@@ -661,10 +773,12 @@ queue_picture(VideoState *is, AVFrame *pFrame, double pts)
 	if (is->quit)
 		return -1;
 
-    if ( (frame_copy = handle_color(pFrame,is)) != NULL) {
-            pFrame = frame_copy;
+    if ((frame_copy = handle_color(pFrame,is)) != NULL) {
+        pFrame = frame_copy;
     }
-
+    if ((frame_copy = handle_merge(pFrame,is)) != NULL) {
+        pFrame = frame_copy;
+    }
 	// windex is set to 0 initially
 	vp = &is->pictq[is->pictq_windex];
 
@@ -805,7 +919,6 @@ video_thread(void *arg)
 	double pts;
 
 	pFrame = avcodec_alloc_frame();
-
 	for (;;) {
 		if (packet_queue_get(&is->videoq, packet, 1) < 0) {
 			// means we quit getting packets
@@ -842,7 +955,7 @@ video_thread(void *arg)
                 if (queue_picture(is, pFrame, pts) < 0) {
                     break;
                 }
-		    }
+        }
 		av_free_packet(packet);
 	}
 	av_free(pFrame);
@@ -850,7 +963,7 @@ video_thread(void *arg)
 }
 
 int
-stream_component_open(VideoState *is, int stream_index)
+stream_component_open(VideoState* is, int stream_index)
 {
 
 	AVFormatContext *pFormatCtx = is->pFormatCtx;
@@ -958,24 +1071,32 @@ decode_thread(void *arg)
 	int audio_index = -1;
 	int i;
 
+  //  #define PROT_STR "unixetwo://"
+  //  char prot_ip[strlen(is->filename) + strlen(PROT_STR) + 1];
+   // sprintf(prot_ip, "%s%s", PROT_STR, is->filename);
+
 	is->videoStream = -1;
 	is->audioStream = -1;
 
 	AVIOInterruptCB interupt_cb;
 
-    if (is->id == 1) {
+    /* initialize the global video states */
+	switch(is->id) {
+    case 1:
         global_video_state = is;
-    } else if (is->id == 2) {
+        break;
+    case 2:
         global_video_state2 = is;
-    }
-    else if (is->id == 3) {
+        break;
+    case 3:
         global_video_state3 = is;
-    }
-
+        break;
+	}
 	// will interrupt blocking functions if we quit!
 	interupt_cb.callback = decode_interrupt_cb;
 	interupt_cb.opaque = is;
 	SDL_LockMutex(mutex);
+
 	if (avio_open2(&is->io_ctx, is->filename, 0, &interupt_cb, NULL)) {
 		fprintf(stderr, "Cannot open I/O for %s\n", is->filename);
 		return -1;
@@ -1188,11 +1309,23 @@ main(int argc, char *argv[])
     VideoState* is3 = NULL;
     VideoState* tempIs;
 
+    res_image = (Resized*) malloc(sizeof(Resized));
+    memset(res_image,0,sizeof(Resized));
+
     mutex = SDL_CreateMutex();
 	// Register all formats and codecs
 	av_register_all();
 
 //	av_register_protocol(NULL);
+    if (av_register_protocol2(&e2URLProtocol, size) < 0) {
+        printf("Error registering the protocol. \n");
+        return -1;
+    }
+
+  /*  if (connect_server() < 0) {
+        printf("error connecting. \n");
+        return -1;
+    }*/
 
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
 		fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
@@ -1241,14 +1374,8 @@ main(int argc, char *argv[])
 		switch (event.type) {
             case SDL_KEYDOWN:
                 switch (event.key.keysym.sym) {
-                    case SDLK_LEFT:
-                        incr = -10.0;
-                        goto do_seek;
-                    case SDLK_RIGHT:
-                        incr = 10.0;
-                        goto do_seek;
                     case SDLK_1:
-                        if (is != NULL && (curr_video_on != 1 || curr_audio_on != 1)) {
+                        if (is != NULL && !is->quit && (curr_video_on != 1 || curr_audio_on != 1)) {
                             turn_screen_black();
                             curr_video_on = 1;
                             curr_audio_on = 1;
@@ -1257,7 +1384,7 @@ main(int argc, char *argv[])
                         }
                         break;
                     case SDLK_2:
-                        if (is2 != NULL && (curr_audio_on != 2 || curr_video_on != 2)) {
+                        if (is2 != NULL && !is2->quit && (curr_audio_on != 2 || curr_video_on != 2)) {
                             turn_screen_black();
                             curr_video_on = 2;
                             curr_audio_on = 2;
@@ -1266,7 +1393,7 @@ main(int argc, char *argv[])
                         }
                         break;
                     case SDLK_3:
-                        if (is3 != NULL && (curr_audio_on != 3 || curr_video_on != 3)) {
+                        if (is3 != NULL && !is3->quit && (curr_audio_on != 3 || curr_video_on != 3)) {
                             turn_screen_black();
                             curr_video_on = 3;
                             curr_audio_on = 3;
@@ -1275,50 +1402,44 @@ main(int argc, char *argv[])
                         }
                         break;
                     case SDLK_4:
-                        if (is != NULL &&curr_video_on != 1) {
+                        if (is != NULL && !is->quit && curr_video_on != 1) {
                             curr_video_on = 1;
                             goto do_seek;
                         }
                         break;
                     case SDLK_5:
-                        if (is2 != NULL && curr_video_on != 2) {
+                        if (is2 != NULL && !is2->quit && curr_video_on != 2) {
                             curr_video_on = 2;
                             goto do_seek;
                         }
                         break;
                     case SDLK_6:
-                        if (is3 != NULL && curr_video_on != 3) {
+                        if (is3 != NULL && !is3->quit &&  curr_video_on != 3) {
                             curr_video_on = 3;
                             goto do_seek;
                         }
                         break;
                     case SDLK_7:
-                        if (is != NULL && curr_audio_on != 1) {
-                      //      reopen_audio();
+                        if (is != NULL && !is->quit && curr_audio_on != 1) {
                             curr_audio_on = 1;
+                            reopen_audio(is);
                             goto do_seek;
                         }
                         break;
                     case SDLK_8:
-                        if (is2 != NULL && curr_audio_on != 2) {
-                      //      reopen_audio();
+                        if (is2 != NULL && !is2->quit && curr_audio_on != 2) {
                             curr_audio_on = 2;
+                            reopen_audio(is2);
                             goto do_seek;
                         }
                         break;
                     case SDLK_9:
-                        if (is3 != NULL && curr_audio_on != 3) {
-                      //      reopen_audio();
+                        if (is3 != NULL && !is3->quit && curr_audio_on != 3) {
                             curr_audio_on = 3;
+                            reopen_audio(is3);
                             goto do_seek;
                         }
                         break;
-                    case SDLK_UP:
-                        incr = 60.0;
-                        goto do_seek;
-                    case SDLK_DOWN:
-                        incr = -60.0;
-                        goto do_seek;
                     case SDLK_r:
                         video_color = RED;
                         break;
@@ -1330,6 +1451,12 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_w:
                         video_color = BW;
+                        break;
+                    case SDLK_p:
+                        if (pp_on)
+                            pp_on = 0;
+                        else
+                            pp_on = 1;
                         break;
                     do_seek:
                     pos = calculate_pos();
