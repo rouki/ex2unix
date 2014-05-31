@@ -262,6 +262,12 @@ AVFrame* RGB_TO_YUV(AVFrame* origin, AVCodecContext* pCodecCtx) {
     return pYUVFrame;
 }
 
+void
+turn_off_pp()
+{
+    res_image->flag = 0;
+    pp_on = 0;
+}
 
 void packet_queue_init(PacketQueue *q) {
 	memset(q, 0, sizeof(PacketQueue));
@@ -702,18 +708,27 @@ void alloc_picture(void *userdata) {
 
 }
 
+int
+number_of_movies() {
+    int result = 0;
+    if (global_video_state) result += 1;
+    if (global_video_state2) result += 1;
+    if (global_video_state3) result += 1;
+    return result;
+}
+
 AVFrame*
 handle_merge (AVFrame* origin, VideoState* is)
 {
 
-    if (pp_on && ((is->id - 1) == curr_video_on)) {
+    if (pp_on && ((is->id - 1) == curr_video_on % number_of_movies())) {
         resize_image(origin, is->video_st[is->videoStream].codec,global_video_state->video_st[global_video_state->videoStream].codec);
         return NULL;
     } else if (pp_on && is->id == curr_video_on) {
         while (!res_image->flag);
         AVFrame* result = merge_frames(origin, is);
-        res_image->flag = 0;
         av_free(res_image->small_image);
+        res_image->flag = 0;
         return result;
     } else {
         return NULL;
@@ -1376,6 +1391,7 @@ main(int argc, char *argv[])
                 switch (event.key.keysym.sym) {
                     case SDLK_1:
                         if (is != NULL && !is->quit && (curr_video_on != 1 || curr_audio_on != 1)) {
+                  //          if (pp_on) turn_off_pp();
                             turn_screen_black();
                             curr_video_on = 1;
                             curr_audio_on = 1;
@@ -1385,6 +1401,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_2:
                         if (is2 != NULL && !is2->quit && (curr_audio_on != 2 || curr_video_on != 2)) {
+                   //         if (pp_on) turn_off_pp();
                             turn_screen_black();
                             curr_video_on = 2;
                             curr_audio_on = 2;
@@ -1394,6 +1411,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_3:
                         if (is3 != NULL && !is3->quit && (curr_audio_on != 3 || curr_video_on != 3)) {
+                      //      if (pp_on) turn_off_pp();
                             turn_screen_black();
                             curr_video_on = 3;
                             curr_audio_on = 3;
@@ -1403,24 +1421,28 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_4:
                         if (is != NULL && !is->quit && curr_video_on != 1) {
+                     //       if (pp_on) turn_off_pp();
                             curr_video_on = 1;
                             goto do_seek;
                         }
                         break;
                     case SDLK_5:
                         if (is2 != NULL && !is2->quit && curr_video_on != 2) {
+                      //      if (pp_on) turn_off_pp();
                             curr_video_on = 2;
                             goto do_seek;
                         }
                         break;
                     case SDLK_6:
                         if (is3 != NULL && !is3->quit &&  curr_video_on != 3) {
+                      //      if (pp_on) turn_off_pp();
                             curr_video_on = 3;
                             goto do_seek;
                         }
                         break;
                     case SDLK_7:
                         if (is != NULL && !is->quit && curr_audio_on != 1) {
+                      //      if (pp_on) turn_off_pp();
                             curr_audio_on = 1;
                             reopen_audio(is);
                             goto do_seek;
@@ -1428,6 +1450,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_8:
                         if (is2 != NULL && !is2->quit && curr_audio_on != 2) {
+                      //      if (pp_on) turn_off_pp();
                             curr_audio_on = 2;
                             reopen_audio(is2);
                             goto do_seek;
@@ -1435,6 +1458,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_9:
                         if (is3 != NULL && !is3->quit && curr_audio_on != 3) {
+                       //     if (pp_on) turn_off_pp();
                             curr_audio_on = 3;
                             reopen_audio(is3);
                             goto do_seek;
@@ -1453,10 +1477,12 @@ main(int argc, char *argv[])
                         video_color = BW;
                         break;
                     case SDLK_p:
-                        if (pp_on)
-                            pp_on = 0;
-                        else
+                        if (pp_on) {
+                                turn_off_pp();
+                        }
+                        else {
                             pp_on = 1;
+                        }
                         break;
                     do_seek:
                     pos = calculate_pos();
