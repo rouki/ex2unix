@@ -67,7 +67,8 @@ typedef struct Resized_Image {
     int width;
     int height;
     AVFrame* small_image;
-
+    SDL_mutex* mutex;
+    SDL_cond*  cond;
 }Resized;
 
 Resized* res_image;
@@ -206,7 +207,7 @@ merge_frames (AVFrame* dest_image, VideoState* is1)
 void
 resize_image(AVFrame* image1, AVCodecContext* pCodecCtx_image1, AVCodecContext* pCodecCtx_image2)
 {
-    while (res_image->flag == 1);
+    SDL_LockMutex(res_image->mutex);
     res_image->small_image = avcodec_alloc_frame();
     res_image->width = pCodecCtx_image1->width;
     for (res_image->height = pCodecCtx_image1->height ; res_image->height > pCodecCtx_image2->height / DECR_BY ; res_image->height /= DECR_BY) {
@@ -223,6 +224,8 @@ resize_image(AVFrame* image1, AVCodecContext* pCodecCtx_image1, AVCodecContext* 
     sws_scale(resize, image1->data, image1->linesize, 0, pCodecCtx_image1->height, res_image->small_image->data, res_image->small_image->linesize);
     sws_freeContext(resize);
     res_image->flag = 1;
+    SDL_CondSignal(res_image->cond);
+    SDL_UnlockMutex(res_image->mutex);
 }
 
 AVFrame* YUV_TO_RGB(AVFrame* origin, AVCodecContext* pCodecCtx) {
@@ -265,8 +268,19 @@ AVFrame* RGB_TO_YUV(AVFrame* origin, AVCodecContext* pCodecCtx) {
 void
 turn_off_pp()
 {
+    SDL_DestroyMutex(res_image->mutex);
+    SDL_DestroyCond(res_image->cond);
     res_image->flag = 0;
     pp_on = 0;
+}
+
+void
+turn_on_pp()
+{
+    res_image->mutex = SDL_CreateMutex();
+    res_image->cond = SDL_CreateCond();
+    res_image->flag = 0;
+    pp_on = 1;
 }
 
 void packet_queue_init(PacketQueue *q) {
@@ -725,10 +739,15 @@ handle_merge (AVFrame* origin, VideoState* is)
         resize_image(origin, is->video_st[is->videoStream].codec,global_video_state->video_st[global_video_state->videoStream].codec);
         return NULL;
     } else if (pp_on && is->id == curr_video_on) {
-        while (!res_image->flag);
+        while (!res_image->flag) {
+            SDL_CondWait(res_image->cond, res_image->mutex);
+        }
+        SDL_LockMutex(res_image->mutex);
+        printf("Here. \n");
         AVFrame* result = merge_frames(origin, is);
         av_free(res_image->small_image);
         res_image->flag = 0;
+        SDL_UnlockMutex(res_image->mutex);
         return result;
     } else {
         return NULL;
@@ -1391,7 +1410,7 @@ main(int argc, char *argv[])
                 switch (event.key.keysym.sym) {
                     case SDLK_1:
                         if (is != NULL && !is->quit && (curr_video_on != 1 || curr_audio_on != 1)) {
-                  //          if (pp_on) turn_off_pp();
+                            if (pp_on) turn_off_pp();
                             turn_screen_black();
                             curr_video_on = 1;
                             curr_audio_on = 1;
@@ -1401,7 +1420,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_2:
                         if (is2 != NULL && !is2->quit && (curr_audio_on != 2 || curr_video_on != 2)) {
-                   //         if (pp_on) turn_off_pp();
+                            if (pp_on) turn_off_pp();
                             turn_screen_black();
                             curr_video_on = 2;
                             curr_audio_on = 2;
@@ -1411,7 +1430,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_3:
                         if (is3 != NULL && !is3->quit && (curr_audio_on != 3 || curr_video_on != 3)) {
-                      //      if (pp_on) turn_off_pp();
+                            if (pp_on) turn_off_pp();
                             turn_screen_black();
                             curr_video_on = 3;
                             curr_audio_on = 3;
@@ -1421,28 +1440,28 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_4:
                         if (is != NULL && !is->quit && curr_video_on != 1) {
-                     //       if (pp_on) turn_off_pp();
+                            if (pp_on) turn_off_pp();
                             curr_video_on = 1;
                             goto do_seek;
                         }
                         break;
                     case SDLK_5:
                         if (is2 != NULL && !is2->quit && curr_video_on != 2) {
-                      //      if (pp_on) turn_off_pp();
+                            if (pp_on) turn_off_pp();
                             curr_video_on = 2;
                             goto do_seek;
                         }
                         break;
                     case SDLK_6:
                         if (is3 != NULL && !is3->quit &&  curr_video_on != 3) {
-                      //      if (pp_on) turn_off_pp();
+                            if (pp_on) turn_off_pp();
                             curr_video_on = 3;
                             goto do_seek;
                         }
                         break;
                     case SDLK_7:
                         if (is != NULL && !is->quit && curr_audio_on != 1) {
-                      //      if (pp_on) turn_off_pp();
+                            if (pp_on) turn_off_pp();
                             curr_audio_on = 1;
                             reopen_audio(is);
                             goto do_seek;
@@ -1450,7 +1469,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_8:
                         if (is2 != NULL && !is2->quit && curr_audio_on != 2) {
-                      //      if (pp_on) turn_off_pp();
+                            if (pp_on) turn_off_pp();
                             curr_audio_on = 2;
                             reopen_audio(is2);
                             goto do_seek;
@@ -1458,7 +1477,7 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_9:
                         if (is3 != NULL && !is3->quit && curr_audio_on != 3) {
-                       //     if (pp_on) turn_off_pp();
+                            if (pp_on) turn_off_pp();
                             curr_audio_on = 3;
                             reopen_audio(is3);
                             goto do_seek;
@@ -1478,10 +1497,10 @@ main(int argc, char *argv[])
                         break;
                     case SDLK_p:
                         if (pp_on) {
-                                turn_off_pp();
+                            turn_off_pp();
                         }
                         else {
-                            pp_on = 1;
+                            turn_on_pp();
                         }
                         break;
                     do_seek:
