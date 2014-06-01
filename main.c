@@ -159,29 +159,6 @@ VideoState* global_video_state3;
 
 AVPacket flush_pkt;
 
-void SaveFrame(AVFrame *pFrame, int width, int height, int iFrame) {
-  FILE *pFile;
-  char szFilename[32];
-  int  y;
-
-  // Open file
-  sprintf(szFilename, "frame%d.ppm", iFrame);
-  pFile=fopen(szFilename, "wb");
-  if(pFile==NULL)
-    return;
-
-  // Write header
-  fprintf(pFile, "P6\n%d %d\n255\n", width, height);
-
-  // Write pixel data
-  for(y=0; y<height; y++)
-    fwrite(pFrame->data[0]+y*pFrame->linesize[0], 1, width*3, pFile);
-
-  // Close file
-  fclose(pFile);
-}
-
-
 AVFrame*
 merge_frames (AVFrame* dest_image, VideoState* is1)
 {
@@ -762,16 +739,22 @@ handle_color (AVFrame* origin, VideoState* is)
     if (video_color == REGULAR) {
         return NULL;
     } else {
-        pFrameRGB = YUV_TO_RGB(origin, is->video_st[is->videoStream].codec);
         int c_del1 = 0 , c_del2 = 0, bw = 0;
-        if (video_color == RED) {
+        pFrameRGB = YUV_TO_RGB(origin, is->video_st[is->videoStream].codec);
+        switch (video_color) {
+        case RED:
             c_del1 = 1; c_del2 = 2;
-        } else if (video_color == GREEN) {
+            break;
+        case GREEN:
             c_del1 = 0; c_del2 = 2;
-        } else if (video_color == BLUE) {
-            c_del1 = 0; c_del2 = 1;
-        } else {
+            break;
+        case BLUE:
+            c_del1 = 0 ; c_del2 = 1;
+            break;
+        case BW:
             bw = 1;
+            break;
+
         }
         for (int y = 0; y < is->video_st[is->videoStream].codec->height; ++y) {
             uint8_t* s = (pFrameRGB->data[0] + y * pFrameRGB->linesize[0]);
