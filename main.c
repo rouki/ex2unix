@@ -46,6 +46,8 @@
 
 typedef enum {REGULAR, RED, GREEN, BLUE, BW} VIDEO_COLOR ;
 
+typedef enum {VIDEO_THREAD, DECODE_THREAD} THREAD_TYPE;
+
 AVFrame* YUV_TO_RGB(AVFrame* origin, AVCodecContext* pCodecCtx);
 AVFrame* RGB_TO_YUV(AVFrame* origin, AVCodecContext* pCodecCtx);
 
@@ -56,6 +58,12 @@ int last_played_video = 1;
 int pp_on = 0;
 
 SDL_mutex* mutex;
+static SDL_Thread* parse_tid1;
+static SDL_Thread* video_tid1;
+static SDL_Thread* parse_tid2;
+static SDL_Thread* video_tid2;
+static SDL_Thread* parse_tid3;
+static SDL_Thread* video_tid3;
 
 extern URLProtocol e2URLProtocol;
 extern int size;
@@ -80,6 +88,7 @@ typedef struct PacketQueue {
 	SDL_mutex *mutex;
 	SDL_cond *cond;
 } PacketQueue;
+
 
 typedef struct VideoPicture {
 	SDL_Overlay *bmp;
@@ -135,6 +144,7 @@ typedef struct VideoState {
 
 	SDL_Thread *parse_tid;
 	SDL_Thread *video_tid;
+
 	SDL_AudioSpec spec;
 
 	AVIOContext *io_ctx;
@@ -148,6 +158,8 @@ typedef struct VideoState {
 enum {
 	AV_SYNC_AUDIO_MASTER, AV_SYNC_VIDEO_MASTER, AV_SYNC_EXTERNAL_MASTER,
 };
+
+static SDL_Thread* get_thread (VideoState* video, THREAD_TYPE type);
 
 SDL_Surface *screen;
 
@@ -754,6 +766,9 @@ handle_color (AVFrame* origin, VideoState* is)
         case BW:
             bw = 1;
             break;
+        default:
+            // won't get here
+            break;
 
         }
         for (int y = 0; y < is->video_st[is->videoStream].codec->height; ++y) {
@@ -1046,7 +1061,7 @@ stream_component_open(VideoState* is, int stream_index)
             is->video_current_pts_time = av_gettime();
 
             packet_queue_init(&is->videoq);
-            is->video_tid = SDL_CreateThread(video_thread, is);
+            is->video_tid = get_thread(is, VIDEO_THREAD);
             if (is->id == 1)
             	codecCtx->get_buffer = our_get_buffer;
             else if (is->id == 2)
@@ -1306,14 +1321,69 @@ init_run_video(VideoState* is, const char* name, int id)
 	is->pictq_mutex = SDL_CreateMutex();
 	is->pictq_cond = SDL_CreateCond();
 	is->av_sync_type = DEFAULT_AV_SYNC_TYPE;
-	is->parse_tid = SDL_CreateThread(decode_thread, is);
+	is->parse_tid = get_thread(is, DECODE_THREAD);
 	schedule_refresh(is, 40);
-    if (!is->parse_tid) {
-		av_free(is);
-		return -1;
-	}
-
 	return 0;
+}
+
+static SDL_Thread*
+get_thread (VideoState* video, THREAD_TYPE type)
+{
+    static SDL_Thread* dec_thread[3];
+    static SDL_Thread* vid_thread[3];
+
+    switch (video->id) {
+        case 1:
+            {
+                if (type == DECODE_THREAD) {
+                    if (dec_thread[0] == NULL) {
+                        dec_thread[0] = SDL_CreateThread(decode_thread, video);
+                    }
+                    return dec_thread[0];
+                }
+                else if (type == VIDEO_THREAD) {
+                    if (vid_thread[0] == NULL) {
+                        vid_thread[0] = SDL_CreateThread(video_thread, video);
+                    }
+                    return vid_thread[0];
+                }
+            }
+            break;
+        case 2:
+            {
+                if (type == DECODE_THREAD) {
+                    if (dec_thread[1] == NULL) {
+                        dec_thread[1] = SDL_CreateThread(decode_thread, video);
+                    }
+                    return dec_thread[1];
+                }
+                else if (type == VIDEO_THREAD) {
+                    if (vid_thread[1] == NULL) {
+                        vid_thread[1] = SDL_CreateThread(video_thread, video);
+                    }
+                    return vid_thread[1];
+                }
+            }
+            break;
+        case 3:
+            {
+               if (type == DECODE_THREAD) {
+                    if (dec_thread[2] == NULL) {
+                        dec_thread[2] = SDL_CreateThread(decode_thread, video);
+                    }
+                    return dec_thread[2];
+                }
+                else if (type == VIDEO_THREAD) {
+                    if (vid_thread[2] == NULL) {
+                        vid_thread[2] = SDL_CreateThread(video_thread, video);
+                    }
+                    return vid_thread[2];
+                }
+            }
+            break;
+
+    }
+    return NULL;
 }
 
 int
