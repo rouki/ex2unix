@@ -21,156 +21,18 @@
 #include <stdio.h>
 #include <math.h>
 
-#define SDL_AUDIO_BUFFER_SIZE 1024
+#include "ex2.h"
 
-#define MAX_AUDIOQ_SIZE (5 * 16 * 1024)
-#define MAX_VIDEOQ_SIZE (5 * 256 * 1024)
-
-#define AV_SYNC_THRESHOLD 0.01
-#define AV_NOSYNC_THRESHOLD 10.0
-
-#define SAMPLE_CORRECTION_PERCENT_MAX 10
-#define AUDIO_DIFF_AVG_NB 20
-#define AVCODEC_MAX_AUDIO_FRAME_SIZE 192000
-
-#define FF_ALLOC_EVENT   (SDL_USEREVENT)
-#define FF_REFRESH_EVENT (SDL_USEREVENT + 1)
-#define FF_QUIT_EVENT (SDL_USEREVENT + 2)
-
-#define VIDEO_PICTURE_QUEUE_SIZE 1
-
-#define DEFAULT_AV_SYNC_TYPE AV_SYNC_VIDEO_MASTER
-
-#define SERVER_IP "127.0.0.1"
-#define DECR_BY 2
-
-typedef enum {REGULAR, RED, GREEN, BLUE, BW} VIDEO_COLOR ;
-
-typedef enum {VIDEO_THREAD, DECODE_THREAD} THREAD_TYPE;
-
-AVFrame* YUV_TO_RGB(AVFrame* origin, AVCodecContext* pCodecCtx);
-AVFrame* RGB_TO_YUV(AVFrame* origin, AVCodecContext* pCodecCtx);
-
-int curr_video_on = 1;
-int curr_audio_on = 1;
-int ff_on = 1;
-int last_played_video = 1;
-int pp_on = 0;
-
-SDL_mutex* mutex;
-static SDL_Thread* parse_tid1;
-static SDL_Thread* video_tid1;
-static SDL_Thread* parse_tid2;
-static SDL_Thread* video_tid2;
-static SDL_Thread* parse_tid3;
-static SDL_Thread* video_tid3;
-
-extern URLProtocol e2URLProtocol;
 extern int size;
+extern URLProtocol e2URLProtocol;
 
-VIDEO_COLOR video_color = REGULAR;
-
-typedef struct Resized_Image {
-    int flag;
-    int width;
-    int height;
-    AVFrame* small_image;
-    SDL_mutex* mutex;
-    SDL_cond*  cond;
-}Resized;
-
-Resized* res_image;
-
-typedef struct PacketQueue {
-	AVPacketList *first_pkt, *last_pkt;
-	int nb_packets;
-	int size;
-	SDL_mutex *mutex;
-	SDL_cond *cond;
-} PacketQueue;
-
-
-typedef struct VideoPicture {
-	SDL_Overlay *bmp;
-	int width, height; /* source height & width */
-	int allocated;
-	double pts;
-} VideoPicture;
-
-typedef struct VideoState {
-
-	AVFormatContext *pFormatCtx;
-	int videoStream, audioStream;
-
-	int av_sync_type;
-	double external_clock; /* external clock base */
-	int64_t external_clock_time;
-	int p2;
-
-	int seek_req;
-	int seek_flags;
-	int64_t seek_pos;
-
-	double audio_clock;
-	AVStream *audio_st;
-	PacketQueue audioq;
-	uint8_t audio_buf[(AVCODEC_MAX_AUDIO_FRAME_SIZE * 3) / 2];
-	unsigned int audio_buf_size;
-	unsigned int audio_buf_index;
-	AVPacket audio_pkt;
-	uint8_t *audio_pkt_data;
-	int audio_pkt_size;
-	AVFrame audio_frame;
-	AVStream *video_st;
-	PacketQueue videoq;
-	int audio_hw_buf_size;
-	double audio_diff_cum; /* used for AV difference average computation */
-	double audio_diff_avg_coef;
-	double audio_diff_threshold;
-	int audio_diff_avg_count;
-	double frame_timer;
-	double frame_last_pts;
-	double frame_last_delay;
-
-	double video_current_pts; ///<current displayed pts (different from video_clock if frame fifos are used)
-	int64_t video_current_pts_time; ///<time (av_gettime) at which we updated video_current_pts - used to have running video pts
-
-	double video_clock; ///<pts of last decoded frame / predicted pts of next decoded frame
-
-	VideoPicture pictq[VIDEO_PICTURE_QUEUE_SIZE];
-	int pictq_size, pictq_rindex, pictq_windex;
-	SDL_mutex *pictq_mutex;
-	SDL_cond *pictq_cond;
-
-	SDL_Thread *parse_tid;
-	SDL_Thread *video_tid;
-
-	SDL_AudioSpec spec;
-
-	AVIOContext *io_ctx;
-	struct SwsContext *sws_ctx;
-
-    int id;
-	char filename[1024];
-	int quit;
-} VideoState;
-
-enum {
-	AV_SYNC_AUDIO_MASTER, AV_SYNC_VIDEO_MASTER, AV_SYNC_EXTERNAL_MASTER,
-};
-
-static SDL_Thread* get_thread (VideoState* video, THREAD_TYPE type);
-
-SDL_Surface *screen;
-
-/* Since we only have one decoding thread, the Big Struct
- can be global in case we need it. */
-VideoState* global_video_state;
-VideoState* global_video_state2;
-VideoState* global_video_state3;
-
-AVPacket flush_pkt;
-
+/*
+ * merges the resized image (res_image - global variable) and the given destination image
+ *
+ * returns a YUV merged image.
+ *
+ * pre-conditions: res_image points to a valid image, otherwise behavior is undefined
+ */
 AVFrame*
 merge_frames (AVFrame* dest_image, VideoState* is1)
 {
@@ -193,6 +55,13 @@ merge_frames (AVFrame* dest_image, VideoState* is1)
     return RGB_TO_YUV(pFrameRGB1, is1->video_st[is1->videoStream].codec);
 }
 
+/*
+ * resizes the given image according to another image, let the 'merging thread' know when it's done.
+ *
+ * pCodecCtx_image1 - codec context of the image that should be resized
+ * pCodecCtx_image2 - codec context of the image it should resize according to
+ *
+ */
 void
 resize_image(AVFrame* image1, AVCodecContext* pCodecCtx_image1, AVCodecContext* pCodecCtx_image2)
 {
@@ -217,6 +86,11 @@ resize_image(AVFrame* image1, AVCodecContext* pCodecCtx_image1, AVCodecContext* 
     SDL_UnlockMutex(res_image->mutex);
 }
 
+/*
+ * converts the given image to RGB
+ *
+ * pre-conditions: The given image is formatted as YUV
+ */
 AVFrame* YUV_TO_RGB(AVFrame* origin, AVCodecContext* pCodecCtx) {
     AVFrame* pFrameRGB;
     uint8_t* buffer;
@@ -239,6 +113,12 @@ AVFrame* YUV_TO_RGB(AVFrame* origin, AVCodecContext* pCodecCtx) {
     return pFrameRGB;
 }
 
+/*
+ * converts the given image to YUV
+ *
+ *
+ * pre-conditions: The given image is formatted as RGB
+ */
 AVFrame* RGB_TO_YUV(AVFrame* origin, AVCodecContext* pCodecCtx) {
     AVFrame* pYUVFrame;
     uint8_t* buffer;
@@ -720,6 +600,10 @@ number_of_movies() {
     return result;
 }
 
+/*
+ * handles merging between two threads (To support PP)
+ *
+ */
 AVFrame*
 handle_merge (AVFrame* origin, VideoState* is)
 {
@@ -732,7 +616,6 @@ handle_merge (AVFrame* origin, VideoState* is)
             SDL_CondWait(res_image->cond, res_image->mutex);
         }
         SDL_LockMutex(res_image->mutex);
-        printf("Here. \n");
         AVFrame* result = merge_frames(origin, is);
         av_free(res_image->small_image);
         res_image->flag = 0;
@@ -744,6 +627,10 @@ handle_merge (AVFrame* origin, VideoState* is)
 
 }
 
+/*
+ * handles color changing (According to the glob. variable 'video_color')
+ *
+ */
 AVFrame*
 handle_color (AVFrame* origin, VideoState* is)
 {
@@ -767,7 +654,7 @@ handle_color (AVFrame* origin, VideoState* is)
             bw = 1;
             break;
         default:
-            // won't get here
+            // UNREACHABLE
             break;
 
         }
@@ -893,10 +780,6 @@ synchronize_video(VideoState *is, AVFrame *src_frame, double pts)
 	is->video_clock += frame_delay;
 	return pts;
 }
-
-uint64_t global_video_pkt_pts = AV_NOPTS_VALUE;
-uint64_t global_video_pkt_pts2 = AV_NOPTS_VALUE;
-uint64_t global_video_pkt_pts3 = AV_NOPTS_VALUE;
 
 /* These are called whenever we allocate a frame
  * buffer. We use this to store the global_pts in
@@ -1273,6 +1156,11 @@ init_spec(VideoState* is, int streamIndex)
     (is->spec).callback = audio_callback;
 }
 
+/*
+ * reopens the audio device with the given VideoState spec.
+ *
+ * (Used when there's a need to change between two movies with different spec)
+ */
 void
 reopen_audio(VideoState* is)
 {
@@ -1280,9 +1168,15 @@ reopen_audio(VideoState* is)
     SDL_CloseAudio();
     init_spec(is,is->audioStream);
     SDL_OpenAudio(&is->spec,&spec);
+    SDL_Delay(10);
     SDL_PauseAudio(0);
 }
 
+/*
+ *
+ * returns the video position of the last played video
+ *
+ */
 double
 calculate_pos()
 {
@@ -1297,9 +1191,9 @@ calculate_pos()
 }
 
 /*
- * Used when switching between two videos (If the switched movie's dimensions are smaller than the new one's)
+ * Used when switching between two videos (If the switched movie's dimensions are bigger than the new one's)
  *
-*/
+ */
 void
 turn_screen_black()
 {
@@ -1313,6 +1207,11 @@ turn_screen_black()
     SDL_Flip(screen);
 }
 
+/*
+ *
+ * initializes the given VideoState and launches its decode thread
+ *
+ */
 int
 init_run_video(VideoState* is, const char* name, int id)
 {
@@ -1326,6 +1225,11 @@ init_run_video(VideoState* is, const char* name, int id)
 	return 0;
 }
 
+/*
+ *
+ * given a video state and thread type, launches the desired thread.
+ * each thread (decode and video thread) can be launched only ONCE for each VideoState.
+ */
 static SDL_Thread*
 get_thread (VideoState* video, THREAD_TYPE type)
 {
@@ -1333,8 +1237,7 @@ get_thread (VideoState* video, THREAD_TYPE type)
     static SDL_Thread* vid_thread[3];
 
     switch (video->id) {
-        case 1:
-            {
+        case 1: {
                 if (type == DECODE_THREAD) {
                     if (dec_thread[0] == NULL) {
                         dec_thread[0] = SDL_CreateThread(decode_thread, video);
@@ -1349,8 +1252,7 @@ get_thread (VideoState* video, THREAD_TYPE type)
                 }
             }
             break;
-        case 2:
-            {
+        case 2: {
                 if (type == DECODE_THREAD) {
                     if (dec_thread[1] == NULL) {
                         dec_thread[1] = SDL_CreateThread(decode_thread, video);
@@ -1365,8 +1267,7 @@ get_thread (VideoState* video, THREAD_TYPE type)
                 }
             }
             break;
-        case 3:
-            {
+        case 3: {
                if (type == DECODE_THREAD) {
                     if (dec_thread[2] == NULL) {
                         dec_thread[2] = SDL_CreateThread(decode_thread, video);
