@@ -400,7 +400,7 @@ int audio_decode_frame(VideoState *is, double *pts_ptr) {
 
 		/* if update, update the audio clock w/pts */
 		if (pkt->pts != AV_NOPTS_VALUE) {
-			is->audio_clock = (av_q2d(is->audio_st->time_base) * pkt->pts); // Divide by 2 for double frame rate
+			is->audio_clock = (av_q2d(is->audio_st->time_base) * pkt->pts);
 		}
 	}
 
@@ -777,7 +777,7 @@ synchronize_video(VideoState *is, AVFrame *src_frame, double pts)
 	frame_delay = av_q2d(is->video_st->codec->time_base);
 	/* if we are repeating a frame, adjust clock accordingly */
 	frame_delay += src_frame->repeat_pict * (frame_delay * 0.5);
-	is->video_clock += frame_delay;
+	is->video_clock += frame_delay ;
 	return pts;
 }
 
@@ -834,6 +834,10 @@ video_thread(void *arg)
 	double pts;
 
 	pFrame = avcodec_alloc_frame();
+/*    if (ff_on) {
+        is->video_st->time_base.den *= 2;
+    }
+*/
 	for (;;) {
 		if (packet_queue_get(&is->videoq, packet, 1) < 0) {
 			// means we quit getting packets
@@ -862,7 +866,8 @@ video_thread(void *arg)
 		} else {
 			pts = 0;
 		}
-		pts *= (av_q2d(is->video_st->time_base)); // Divide by 2 for double frame rate
+
+		pts *= (av_q2d(is->video_st->time_base));
 
 		// Did we get a video frame?
 		if (frameFinished) {
@@ -985,10 +990,9 @@ decode_thread(void *arg)
 	int video_index = -1;
 	int audio_index = -1;
 	int i;
-
-  //  #define PROT_STR "unixetwo://"
-  //  char prot_ip[strlen(is->filename) + strlen(PROT_STR) + 1];
-   // sprintf(prot_ip, "%s%s", PROT_STR, is->filename);
+    #define PROT_STR "unixetwo://"
+    char prot_ip[strlen(is->filename) + strlen(PROT_STR) + 1];
+    sprintf(prot_ip, "%s%s", PROT_STR, is->filename);
 
 	is->videoStream = -1;
 	is->audioStream = -1;
@@ -1012,14 +1016,10 @@ decode_thread(void *arg)
 	interupt_cb.opaque = is;
 	SDL_LockMutex(mutex);
 
-	if (avio_open2(&is->io_ctx, is->filename, 0, &interupt_cb, NULL)) {
-		fprintf(stderr, "Cannot open I/O for %s\n", is->filename);
-		return -1;
+	if (av_open_input_file(&pFormatCtx, prot_ip, NULL, 0, NULL) < 0) {
+        printf("There was a problem opening the file. \n");
+        return -1;
 	}
-
-	// Open video file
-	if (avformat_open_input(&pFormatCtx, is->filename, NULL, NULL) != 0)
-		return -1; // Couldn't open file
 
 	is->pFormatCtx = pFormatCtx;
 
@@ -1287,6 +1287,25 @@ get_thread (VideoState* video, THREAD_TYPE type)
     return NULL;
 }
 
+int connect_server() {
+    int s, t, len;
+    struct sockaddr_un remote;
+    char str[100];
+
+    if ((s = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("socket");
+        return -1;
+    }
+
+    remote.sun_family = AF_UNIX;
+    strcpy(remote.sun_path, "unixetwo");
+    len = strlen(remote.sun_path) + sizeof(remote.sun_family);
+    if (connect(s, (struct sockaddr *)&remote, len) == -1) {
+        perror("connect");
+        return -1;
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1313,7 +1332,8 @@ main(int argc, char *argv[])
   /*  if (connect_server() < 0) {
         printf("error connecting. \n");
         return -1;
-    }*/
+    }
+    */
 
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
 		fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
