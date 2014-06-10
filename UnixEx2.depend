@@ -1,0 +1,37 @@
+# depslib dependency file v1.0
+1402410636 source:/home/student/Desktop/UnixEx2/main.c
+	<libavcodec/avcodec.h>
+	<libavformat/avformat.h>
+	<libswscale/swscale.h>
+	<libavutil/avstring.h>
+	<libavutil/mathematics.h>
+	<libavformat/avio.h>
+	<SDL/SDL.h>
+	<SDL/SDL_thread.h>
+	<errno.h>
+	<string.h>
+	<sys/types.h>
+	<sys/socket.h>
+	<sys/un.h>
+	<stdio.h>
+	<math.h>
+	"ex2.h"
+
+1402367951 source:/home/student/Desktop/UnixEx2/OSE2UP.c
+	<libavformat/avio.h>
+	<string.h>
+	<sys/types.h>
+	<sys/socket.h>
+	<sys/un.h>
+	<SDL/SDL.h>
+
+1402365264 /home/student/Desktop/UnixEx2/ex2.h
+
+1401764760 source:/home/student/Desktop/UnixEx2/simpleServer.c
+	<stdlib.h>
+	<errno.h>
+	<string.h>
+	<sys/types.h>
+	<sys/socket.h>
+	<sys/un.h>
+

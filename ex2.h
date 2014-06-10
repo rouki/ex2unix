@@ -119,6 +119,9 @@ int pp_on = 0;
 
 Resized* res_image;
 SDL_mutex* mutex;
+//SDL_mutex* pp_mutex;
+//SDL_cond* pp_cond;
+
 VIDEO_COLOR video_color = REGULAR;
 
 SDL_Surface *screen;

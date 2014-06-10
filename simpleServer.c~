@@ -1,0 +1,173 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <inttypes.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#define SOCK_PATH "unixetwo"
+#define BUFSIZE 65536
+
+struct on_movies {
+	int sd;
+	int fd;
+	char name[40];
+};
+
+struct on_movies* get_movie(struct on_movies* movies, int length, int sd) {
+	int i;
+	for (i = 0 ; i < length; ++i) {
+		if (movies[i].sd == sd)
+			return &movies[i];
+	}
+
+	return NULL;
+}
+
+int main(void)
+{
+    int s, s2, t, len, fdmax, i, newfd, j;
+    int movie_arr_index = 0;
+    struct sockaddr_un local, remote;
+    char str[BUFSIZE];
+    char temp[BUFSIZE];
+    struct on_movies movies[2];
+    fd_set master, read_fds;
+    FD_ZERO(&master);
+    FD_ZERO(&read_fds);
+    if ((s = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("socket");
+        exit(1);
+    }
+
+    local.sun_family = AF_UNIX;
+    strcpy(local.sun_path, SOCK_PATH);
+    unlink(local.sun_path);
+    len = strlen(local.sun_path) + sizeof(local.sun_family);
+    if (bind(s, (struct sockaddr *)&local, len) == -1) {
+        perror("bind");
+        exit(1);
+    }
+
+    if (listen(s, 2) == -1) {
+        perror("listen");
+        exit(1);
+    }
+    FD_SET(s, &master);
+    fdmax = s;
+    for(;;) {
+        int done, n;
+        read_fds = master;
+	if (select(fdmax + 1, &read_fds, NULL, NULL, NULL) == -1) {
+		perror("select");
+		exit(4);
+	}
+	for (i = 0; i <= fdmax; ++i) {
+		if (FD_ISSET(i, &read_fds)) {
+			if (i == s) { // listener
+				newfd = accept(s, (struct sockaddr*)&remote, &t);
+			//	printf("\n\n %d \n \n",newfd);
+				movies[movie_arr_index++].sd = newfd;
+				if (newfd == -1) {
+					perror("accept");
+				} else {
+					FD_SET(newfd, &master);
+					if (newfd > fdmax) {
+						fdmax = newfd;
+					}
+				}
+			} else {
+				struct on_movies* the_movie = get_movie(movies, 2, i);
+				n = recv(i, str, sizeof(str), 0);
+                                if (str[0] == 's') {
+                                        printf("Seek!! socket : %d \n", i);		
+				} else if (str[0] == 'r') {
+					printf("Read!! socket : %d \n", i);				
+				}
+            			if (n <= 0) {
+                            		if (n == 0) {
+                           	   		  close(i);
+                              			  FD_CLR(i, &master);
+                              			  close(the_movie->fd);
+                            		}
+                        } else {
+                            switch (str[0]) {
+                                case 'r':
+                                {
+                                    str[n] = '\0';
+                                    char* file_name = str + 12;
+				    strcpy(movies[j].name, file_name);
+                               //     printf("%s \n", file_name);
+                                    if ( (the_movie->fd = open(file_name, O_RDONLY)) == -1) {
+                                        str[0] = 'n';
+                                    } else {
+                                        str[0] = 'a';
+                                    }
+                                    if (send(i, str, BUFSIZE, 0) < 0) {
+                                            perror("send");
+                                    }
+                                }
+                                break;
+                                case 'f':
+                                {
+                                    int size = 0;
+                                    char term = '\0';
+				    memcpy(&size, str + 1, sizeof(int));
+                                    int nbytes_read = 0;
+                                    nbytes_read = read(the_movie->fd, temp, size);
+				    memcpy(str, &nbytes_read, sizeof(int));
+                                    memcpy(str + sizeof(int), temp, nbytes_read);
+                                    if (send(i, str, BUFSIZE, 0) < 0) {
+                                        perror("send");
+                                    }
+                                    if (size == -1)
+                                        break;
+                                        size -= nbytes_read;
+                                    }
+                                }
+                                break;
+                                case 's':
+                                {
+					int64_t curr_pos = lseek(movies[j - 1].fd, 0, SEEK_CUR);
+                                        int whence;
+                                        int64_t pos;
+					int64_t seek = 0;
+                                        memcpy(&pos, str + 1, sizeof(int64_t));
+                                        memcpy(&whence, str + 1 + sizeof(int64_t), sizeof(int));
+					printf("WHENCE = %d \n", whence);
+					printf("POS = %ld \n", pos);
+					if (whence == 65536) {
+						struct stat statbuf;
+						if (fstat(movies[j - 1].fd, &statbuf) < 0){
+							seek = -1;
+						} else {
+							seek = statbuf.st_size;						
+						}			
+					} else {
+						seek = lseek64(movies[j - 1].fd, pos, whence);
+					}
+					printf("SEEK = %ld \n", seek);
+                			if (seek < 0) {
+						seek = curr_pos;	
+					}	
+					printf("SEEK = %ld \n", seek);	
+					memcpy(str, &seek, sizeof(int64_t));
+					if (send(i, str, BUFSIZE , 0) < 0) {
+						perror("send");
+					}
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        } // main select loop
+
+    return 0;
+}
+

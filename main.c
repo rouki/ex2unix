@@ -23,8 +23,9 @@
 
 #include "ex2.h"
 
-extern int size;
+extern int prot_size;
 extern URLProtocol e2URLProtocol;
+extern SDL_mutex* socket_mutex;
 
 /*
  * merges the resized image (res_image - global variable) and the given destination image
@@ -141,6 +142,8 @@ turn_off_pp()
     SDL_DestroyCond(res_image->cond);
     res_image->flag = 0;
     pp_on = 0;
+//    SDL_LockMutex(pp_mutex);
+//   SDL_CondSignal(pp_cond);
 }
 
 void
@@ -150,6 +153,7 @@ turn_on_pp()
     res_image->cond = SDL_CreateCond();
     res_image->flag = 0;
     pp_on = 1;
+
 }
 
 void packet_queue_init(PacketQueue *q) {
@@ -614,7 +618,15 @@ handle_merge (AVFrame* origin, VideoState* is)
     } else if (pp_on && is->id == curr_video_on) {
         while (!res_image->flag) {
             SDL_CondWait(res_image->cond, res_image->mutex);
+       //     SDL_CondWait(pp_cond, pp_mutex);
         }
+  /*      if (!pp_on) {
+            if (res_image->small_image) {
+                av_free(res_image->small_image);
+            }
+            SDL_UnlockMutex(pp_mutex);
+            return NULL;
+        } */
         SDL_LockMutex(res_image->mutex);
         AVFrame* result = merge_frames(origin, is);
         av_free(res_image->small_image);
@@ -990,9 +1002,9 @@ decode_thread(void *arg)
 	int video_index = -1;
 	int audio_index = -1;
 	int i;
-    #define PROT_STR "unixetwo://"
-    char prot_ip[strlen(is->filename) + strlen(PROT_STR) + 1];
-    sprintf(prot_ip, "%s%s", PROT_STR, is->filename);
+  //  #define PROT_STR "unixetwo://"
+  //  char prot_ip[strlen(is->filename) + strlen(PROT_STR) + 1];
+  //  sprintf(prot_ip, "%s%s", PROT_STR, is->filename);
 
 	is->videoStream = -1;
 	is->audioStream = -1;
@@ -1016,10 +1028,14 @@ decode_thread(void *arg)
 	interupt_cb.opaque = is;
 	SDL_LockMutex(mutex);
 
-	if (av_open_input_file(&pFormatCtx, prot_ip, NULL, 0, NULL) < 0) {
+   	if (av_open_input_file(&pFormatCtx, is->filename, NULL, 0, NULL) < 0) {
         printf("There was a problem opening the file. \n");
         return -1;
-	}
+    }
+
+//	// Open video file
+//	if (avformat_open_input(&pFormatCtx, prot_ip, NULL, NULL) != 0)
+//		return -1; // Couldn't open file
 
 	is->pFormatCtx = pFormatCtx;
 
@@ -1065,7 +1081,6 @@ decode_thread(void *arg)
 
             if     (is->videoStream >= 0) stream_index = is->videoStream;
             else if(is->audioStream >= 0) stream_index = is->audioStream;
-
             if(stream_index>=0){
                 seek_target= av_rescale_q(seek_target, AV_TIME_BASE_Q, pFormatCtx->streams[stream_index]->time_base);
             }
@@ -1092,6 +1107,7 @@ decode_thread(void *arg)
             || is->videoq.size > MAX_VIDEOQ_SIZE) {
                 if (is->audioq.size > MAX_AUDIOQ_SIZE && is->id != curr_audio_on) {
                     packet_queue_flush(&is->audioq);
+                    SDL_Delay(5);
                 }
 
 			SDL_Delay(10);
@@ -1287,25 +1303,6 @@ get_thread (VideoState* video, THREAD_TYPE type)
     return NULL;
 }
 
-int connect_server() {
-    int s, t, len;
-    struct sockaddr_un remote;
-    char str[100];
-
-    if ((s = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
-        perror("socket");
-        return -1;
-    }
-
-    remote.sun_family = AF_UNIX;
-    strcpy(remote.sun_path, "unixetwo");
-    len = strlen(remote.sun_path) + sizeof(remote.sun_family);
-    if (connect(s, (struct sockaddr *)&remote, len) == -1) {
-        perror("connect");
-        return -1;
-    }
-}
-
 int
 main(int argc, char *argv[])
 {
@@ -1315,16 +1312,17 @@ main(int argc, char *argv[])
     VideoState* is2 = NULL;
     VideoState* is3 = NULL;
     VideoState* tempIs;
-
     res_image = (Resized*) malloc(sizeof(Resized));
     memset(res_image,0,sizeof(Resized));
 
     mutex = SDL_CreateMutex();
+    socket_mutex = SDL_CreateMutex();
+//    pp_mutex = SDL_CreateMutex();
+ //   pp_mutex = SDL_CreateMutex();
+ //   pp_cond = SDL_CreateCond();
 	// Register all formats and codecs
 	av_register_all();
-
-//	av_register_protocol(NULL);
-    if (av_register_protocol2(&e2URLProtocol, size) < 0) {
+    if (av_register_protocol2(&e2URLProtocol, prot_size) < 0) {
         printf("Error registering the protocol. \n");
         return -1;
     }
@@ -1415,6 +1413,7 @@ main(int argc, char *argv[])
                     case SDLK_4:
                         if (is != NULL && !is->quit && curr_video_on != 1) {
                             if (pp_on) turn_off_pp();
+                            turn_screen_black();
                             curr_video_on = 1;
                             goto do_seek;
                         }
@@ -1422,6 +1421,7 @@ main(int argc, char *argv[])
                     case SDLK_5:
                         if (is2 != NULL && !is2->quit && curr_video_on != 2) {
                             if (pp_on) turn_off_pp();
+                            turn_screen_black();
                             curr_video_on = 2;
                             goto do_seek;
                         }
@@ -1429,6 +1429,7 @@ main(int argc, char *argv[])
                     case SDLK_6:
                         if (is3 != NULL && !is3->quit &&  curr_video_on != 3) {
                             if (pp_on) turn_off_pp();
+                            turn_screen_black();
                             curr_video_on = 3;
                             goto do_seek;
                         }
