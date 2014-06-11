@@ -27,16 +27,15 @@ int prot_size = sizeof(e2URLProtocol);
 
 int s = -1;
 int s2 = -1;
-
-struct sockaddr_un remote;
 SDL_mutex* socket_mutex;
 
 int
 e2url_open(URLContext *h, const char *filename, int flags)
 {
-    SDL_LockMutex(socket_mutex);
 	int t, len;
-    char str[BUFSIZE];
+	char result;
+	char str[BUFSIZE];
+	struct sockaddr_un remote;
     if (s == -1)
         h->priv_data = &s;
     else if (s2 == -1)
@@ -54,44 +53,41 @@ e2url_open(URLContext *h, const char *filename, int flags)
         return -1;
     }
     str[0] = 'r';
-    strcpy(str + 1, filename);
-    if (send(*sock, str, strlen(str), 0) == -1) {
+    int name_len = strlen(filename);
+    memcpy(str + 1, &name_len, sizeof(int));
+    strcpy(str + sizeof(int) + 1, filename);
+    if (send(*sock, str, strlen(filename) + sizeof(int) + 1, 0) == -1) {
             perror("send");
             return -1;
     }
-    if ((t = recv(*sock, str, BUFSIZE, 0)) > 0) {
-            str[t] = '\0';
+    if (recv(*sock, &result, 1, 0) == -1) {
+        perror("recv");
+        return -1;
     }
-    printf("%c", str[0]);
-    SDL_UnlockMutex(socket_mutex);
-    return str[0] == 'a' ? 0 : -1;
+    printf("%c \n", result);
+    return result == 'a' ? 0 : -1;
 }
 
 int
 e2url_read(URLContext *h, unsigned char *buf, int size)
 {
-    printf("Size = %d\n",size);
-    char str[BUFSIZE];
-    int n = 0;
-    int copy_to = 0;
-    str[0] = 'f';
     int sock = *(int*)h->priv_data;
-
-    memcpy(str + 1, &size, sizeof(int));
-    if (send(sock, str, BUFSIZE, 0) < 0) {
+    int num_of_bytes;
+    char command = 'f';
+    if (send(sock, &command, 1, 0) < 0) {
         perror("send");
-        return 0;
     }
-    while (size > 0) {
-        n = recv(sock, str, BUFSIZE, 0);
-        ssize_t data_size;
-        memcpy(&data_size, str, sizeof(ssize_t));
-        memcpy(buf + copy_to, str + 4, data_size);
-        copy_to += data_size;
-        size -= data_size;
+    if (send(sock, &size, sizeof(int), 0) < 0) {
+        perror("send");
     }
-    printf("copy_to = %d \n", copy_to);
-    return copy_to;
+    if (recv(sock, &num_of_bytes, sizeof(int), 0) == -1) {
+        perror("recv");
+    }
+    if (recv(sock, buf, num_of_bytes, 0) == -1) {
+        perror("recv");
+    }
+    printf("num of bytes = %d \n", num_of_bytes);
+    return num_of_bytes;
 }
 
 int
@@ -104,26 +100,30 @@ e2url_write(URLContext *h, unsigned char *buf, int size)
 int64_t
 e2url_seek(URLContext *h, int64_t pos, int whence)
 {
-    return -1;
-    char str[BUFSIZE];
-    int n = 0;
-    static int count = 0;
     int sock = *(int*)h->priv_data;
-    int64_t result = 0;
-    str[0] = 's';
-    memcpy(str + 1, &pos, sizeof(int64_t));
-    memcpy(str + 1 + sizeof(int64_t), &whence, sizeof(int));
-    if (send(sock, str, BUFSIZE, 0) < 0) {
+    int64_t result;
+    char command = 's';
+    if (send(sock, &command, 1, 0) < 0) {
         perror("send");
-        return -1;
     }
-    n = recv(sock, str, BUFSIZE, 0);
-    memcpy(&result, str, sizeof(int64_t));
-    printf("result = %lld \n", result);
+    if (send(sock, &pos, sizeof(int64_t), 0) < 0) {
+        perror("send");
+    }
+    if (send(sock, &whence, sizeof(int) , 0) < 0) {
+        perror("send");
+    }
+    if (recv(sock, &result, sizeof(int64_t), 0) == -1) {
+        perror("recv");
+    }
     return result;
 }
 
 int e2url_close(URLContext *h)
 {
-    fclose(s);
+    int sock = *(int*)h->priv_data;
+    char command = 'c';
+    if (send(sock, &command, 1, 0) < 0) {
+        perror("send");
+    }
+    close(sock);
 }

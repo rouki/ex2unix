@@ -141,7 +141,7 @@ turn_off_pp()
     SDL_DestroyMutex(res_image->mutex);
     SDL_DestroyCond(res_image->cond);
     res_image->flag = 0;
-    pp_on = 0;
+    vid_status.pp_on = 0;
 //    SDL_LockMutex(pp_mutex);
 //   SDL_CondSignal(pp_cond);
 }
@@ -152,7 +152,19 @@ turn_on_pp()
     res_image->mutex = SDL_CreateMutex();
     res_image->cond = SDL_CreateCond();
     res_image->flag = 0;
-    pp_on = 1;
+    vid_status.pp_on = 1;
+
+}
+
+void
+init_vid_status() {
+
+    vid_status.curr_video_on = 1;
+    vid_status.curr_audio_on = 1;
+    vid_status.ff_on = 0;
+    vid_status.last_played_audio = 1;
+    vid_status.last_played_video = 1;
+    vid_status.pp_on = 0;
 
 }
 
@@ -414,9 +426,9 @@ int audio_decode_frame(VideoState *is, double *pts_ptr) {
 void audio_callback(void* userdata, Uint8 *stream, int len) {
 
     VideoState* is;
-	if (curr_audio_on == 1) {
+	if (vid_status.curr_audio_on == 1) {
         is = global_video_state;
-	} else if (curr_audio_on == 2) {
+	} else if (vid_status.curr_audio_on == 2) {
         is = global_video_state2;
     } else {
         is = global_video_state3;
@@ -464,7 +476,7 @@ static void schedule_refresh(VideoState *is, int delay) {
 
 void video_display(VideoState *is) {
 
-    if (is->id != curr_video_on)
+    if (is->id != vid_status.curr_video_on)
         return;
 	SDL_Rect rect;
 	VideoPicture *vp;
@@ -612,10 +624,10 @@ AVFrame*
 handle_merge (AVFrame* origin, VideoState* is)
 {
 
-    if (pp_on && ((is->id - 1) == curr_video_on % number_of_movies())) {
+    if (vid_status.pp_on && ((is->id - 1) == vid_status.curr_video_on % number_of_movies())) {
         resize_image(origin, is->video_st[is->videoStream].codec,global_video_state->video_st[global_video_state->videoStream].codec);
         return NULL;
-    } else if (pp_on && is->id == curr_video_on) {
+    } else if (vid_status.pp_on && is->id == vid_status.curr_video_on) {
         while (!res_image->flag) {
             SDL_CondWait(res_image->cond, res_image->mutex);
        //     SDL_CondWait(pp_cond, pp_mutex);
@@ -1002,9 +1014,9 @@ decode_thread(void *arg)
 	int video_index = -1;
 	int audio_index = -1;
 	int i;
-  //  #define PROT_STR "unixetwo://"
-  //  char prot_ip[strlen(is->filename) + strlen(PROT_STR) + 1];
-  //  sprintf(prot_ip, "%s%s", PROT_STR, is->filename);
+    #define PROT_STR "unixetwo://"
+    char prot_ip[strlen(is->filename) + strlen(PROT_STR) + 1];
+    sprintf(prot_ip, "%s%s", PROT_STR, is->filename);
 
 	is->videoStream = -1;
 	is->audioStream = -1;
@@ -1028,7 +1040,7 @@ decode_thread(void *arg)
 	interupt_cb.opaque = is;
 	SDL_LockMutex(mutex);
 
-   	if (av_open_input_file(&pFormatCtx, is->filename, NULL, 0, NULL) < 0) {
+   	if (av_open_input_file(&pFormatCtx, prot_ip, NULL, 0, NULL) < 0) {
         printf("There was a problem opening the file. \n");
         return -1;
     }
@@ -1076,7 +1088,7 @@ decode_thread(void *arg)
 
 	for (;;) {
         if(is->seek_req) {
-            int stream_index= -1;
+            int stream_index = -1;
             int64_t seek_target = is->seek_pos;
 
             if     (is->videoStream >= 0) stream_index = is->videoStream;
@@ -1105,15 +1117,13 @@ decode_thread(void *arg)
 
 		if (is->audioq.size > MAX_AUDIOQ_SIZE
             || is->videoq.size > MAX_VIDEOQ_SIZE) {
-                if (is->audioq.size > MAX_AUDIOQ_SIZE && is->id != curr_audio_on) {
+                if (is->audioq.size > MAX_AUDIOQ_SIZE && is->id != vid_status.curr_audio_on) {
                     packet_queue_flush(&is->audioq);
                     SDL_Delay(5);
                 }
-
 			SDL_Delay(10);
 			continue;
 		}
-
 		if (av_read_frame(is->pFormatCtx, packet) < 0) {
 			if (is->pFormatCtx->pb->error == 0) {
 				SDL_Delay(100); /* no error; wait for user input */
@@ -1184,7 +1194,7 @@ reopen_audio(VideoState* is)
     SDL_CloseAudio();
     init_spec(is,is->audioStream);
     SDL_OpenAudio(&is->spec,&spec);
-    SDL_Delay(10);
+    SDL_Delay(20);
     SDL_PauseAudio(0);
 }
 
@@ -1197,9 +1207,9 @@ double
 calculate_pos()
 {
 
-    if (last_played_video == 1) {
+    if (vid_status.last_played_video == 1 || vid_status.last_played_audio == 1 ) {
         return get_master_clock(global_video_state);
-    } else if (last_played_video == 2) {
+    } else if (vid_status.last_played_video == 2 || vid_status.last_played_audio == 2) {
         return get_master_clock(global_video_state2);
     } else {
         return get_master_clock(global_video_state3);
@@ -1239,6 +1249,27 @@ init_run_video(VideoState* is, const char* name, int id)
 	is->parse_tid = get_thread(is, DECODE_THREAD);
 	schedule_refresh(is, 40);
 	return 0;
+}
+
+void
+seek_video (double required_pos)
+{
+    // video 1 on, audio 1 on => video 1 on, audio 2 on =>
+    if (vid_status.curr_video_on == 1 || vid_status.curr_audio_on == 1 ) {
+        if (vid_status.curr_video_on == 1 && vid_status.last_played_video != 1) vid_status.last_played_video = 1;
+        if (vid_status.curr_audio_on == 1 && vid_status.last_played_audio != 1) vid_status.last_played_audio = 1;
+        stream_seek(global_video_state, (int64_t) (required_pos * AV_TIME_BASE), 1);
+    }
+    if (vid_status.curr_video_on == 2 || vid_status.curr_audio_on == 2) {
+        if (vid_status.curr_video_on == 2 && vid_status.last_played_video != 2) vid_status.last_played_video = 2;
+        if (vid_status.curr_audio_on == 2 && vid_status.last_played_audio != 2) vid_status.last_played_audio = 2;
+        stream_seek(global_video_state2, (int64_t) (required_pos * AV_TIME_BASE), 1);
+    }
+    if (vid_status.curr_video_on == 3 || vid_status.curr_audio_on == 3) {
+        if (vid_status.curr_video_on == 3 && vid_status.last_played_video != 3) vid_status.last_played_video = 3;
+        if (vid_status.curr_audio_on == 3 && vid_status.last_played_audio != 3) vid_status.last_played_audio = 3;
+        stream_seek(global_video_state3, (int64_t) (required_pos * AV_TIME_BASE), 1);
+    }
 }
 
 /*
@@ -1314,6 +1345,7 @@ main(int argc, char *argv[])
     VideoState* tempIs;
     res_image = (Resized*) malloc(sizeof(Resized));
     memset(res_image,0,sizeof(Resized));
+    init_vid_status();
 
     mutex = SDL_CreateMutex();
     socket_mutex = SDL_CreateMutex();
@@ -1381,79 +1413,79 @@ main(int argc, char *argv[])
             case SDL_KEYDOWN:
                 switch (event.key.keysym.sym) {
                     case SDLK_1:
-                        if (is != NULL && !is->quit && (curr_video_on != 1 || curr_audio_on != 1)) {
-                            if (pp_on) turn_off_pp();
+                        if (is != NULL && !is->quit && (vid_status.curr_video_on != 1 || vid_status.curr_audio_on != 1)) {
+                            if (vid_status.pp_on) turn_off_pp();
                             turn_screen_black();
-                            curr_video_on = 1;
-                            curr_audio_on = 1;
+                            vid_status.curr_video_on = 1;
+                            vid_status.curr_audio_on = 1;
                             reopen_audio(is);
                             goto do_seek;
                         }
                         break;
                     case SDLK_2:
-                        if (is2 != NULL && !is2->quit && (curr_audio_on != 2 || curr_video_on != 2)) {
-                            if (pp_on) turn_off_pp();
+                        if (is2 != NULL && !is2->quit && (vid_status.curr_audio_on != 2 || vid_status.curr_video_on != 2)) {
+                            if (vid_status.pp_on) turn_off_pp();
                             turn_screen_black();
-                            curr_video_on = 2;
-                            curr_audio_on = 2;
+                            vid_status.curr_video_on = 2;
+                            vid_status.curr_audio_on = 2;
                             reopen_audio(is2);
                             goto do_seek;
                         }
                         break;
                     case SDLK_3:
-                        if (is3 != NULL && !is3->quit && (curr_audio_on != 3 || curr_video_on != 3)) {
-                            if (pp_on) turn_off_pp();
+                        if (is3 != NULL && !is3->quit && (vid_status.curr_audio_on != 3 || vid_status.curr_video_on != 3)) {
+                            if (vid_status.pp_on) turn_off_pp();
                             turn_screen_black();
-                            curr_video_on = 3;
-                            curr_audio_on = 3;
+                            vid_status.curr_video_on = 3;
+                            vid_status.curr_audio_on = 3;
                             reopen_audio(is3);
                             goto do_seek;
                         }
                         break;
                     case SDLK_4:
-                        if (is != NULL && !is->quit && curr_video_on != 1) {
-                            if (pp_on) turn_off_pp();
+                        if (is != NULL && !is->quit && vid_status.curr_video_on != 1) {
+                            if (vid_status.pp_on) turn_off_pp();
                             turn_screen_black();
-                            curr_video_on = 1;
+                            vid_status.curr_video_on = 1;
                             goto do_seek;
                         }
                         break;
                     case SDLK_5:
-                        if (is2 != NULL && !is2->quit && curr_video_on != 2) {
-                            if (pp_on) turn_off_pp();
+                        if (is2 != NULL && !is2->quit && vid_status.curr_video_on != 2) {
+                            if (vid_status.pp_on) turn_off_pp();
                             turn_screen_black();
-                            curr_video_on = 2;
+                            vid_status.curr_video_on = 2;
                             goto do_seek;
                         }
                         break;
                     case SDLK_6:
-                        if (is3 != NULL && !is3->quit &&  curr_video_on != 3) {
-                            if (pp_on) turn_off_pp();
+                        if (is3 != NULL && !is3->quit &&  vid_status.curr_video_on != 3) {
+                            if (vid_status.pp_on) turn_off_pp();
                             turn_screen_black();
-                            curr_video_on = 3;
+                            vid_status.curr_video_on = 3;
                             goto do_seek;
                         }
                         break;
                     case SDLK_7:
-                        if (is != NULL && !is->quit && curr_audio_on != 1) {
-                            if (pp_on) turn_off_pp();
-                            curr_audio_on = 1;
+                        if (is != NULL && !is->quit && vid_status.curr_audio_on != 1) {
+                            if (vid_status.pp_on) turn_off_pp();
+                            vid_status.curr_audio_on = 1;
                             reopen_audio(is);
                             goto do_seek;
                         }
                         break;
                     case SDLK_8:
-                        if (is2 != NULL && !is2->quit && curr_audio_on != 2) {
-                            if (pp_on) turn_off_pp();
-                            curr_audio_on = 2;
+                        if (is2 != NULL && !is2->quit && vid_status.curr_audio_on != 2) {
+                            if (vid_status.pp_on) turn_off_pp();
+                            vid_status.curr_audio_on = 2;
                             reopen_audio(is2);
                             goto do_seek;
                         }
                         break;
                     case SDLK_9:
-                        if (is3 != NULL && !is3->quit && curr_audio_on != 3) {
-                            if (pp_on) turn_off_pp();
-                            curr_audio_on = 3;
+                        if (is3 != NULL && !is3->quit && vid_status.curr_audio_on != 3) {
+                            if (vid_status.pp_on) turn_off_pp();
+                            vid_status.curr_audio_on = 3;
                             reopen_audio(is3);
                             goto do_seek;
                         }
@@ -1471,7 +1503,7 @@ main(int argc, char *argv[])
                         video_color = BW;
                         break;
                     case SDLK_p:
-                        if (pp_on) {
+                        if (vid_status.pp_on) {
                             turn_off_pp();
                         }
                         else {
@@ -1480,21 +1512,7 @@ main(int argc, char *argv[])
                         break;
                     do_seek:
                     pos = calculate_pos();
-                    if (curr_video_on == 1 || curr_audio_on == 1) {
-                        stream_seek(global_video_state,
-                                    (int64_t) (pos * AV_TIME_BASE), 1);
-                        last_played_video = 1;
-                    }
-                    if (curr_video_on == 2 || curr_audio_on == 2) {
-                        stream_seek(global_video_state2,
-                                    (int64_t) (pos * AV_TIME_BASE), 1);
-                        last_played_video = 2;
-                    }
-                    if (curr_video_on == 3 || curr_audio_on == 3) {
-                        stream_seek(global_video_state3,
-                                    (int64_t) (pos * AV_TIME_BASE), 1);
-                        last_played_video = 3;
-                    }
+                    seek_video(pos);
                         break;
                     default:
                         break;

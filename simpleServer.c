@@ -36,14 +36,15 @@ struct on_movies* get_movie(struct on_movies* movies, int length, int sd)
 int main(void)
 {
     int s, t, len, fdmax, i, newfd;
-    int movie_arr_index = 0;
     struct sockaddr_un local, remote;
-    char str[BUFSIZE];
-    char temp[BUFSIZE];
+
+    char choice;
     struct on_movies movies[2];
+    int movie_arr_index = 0;
     fd_set master, read_fds;
     FD_ZERO(&master);
     FD_ZERO(&read_fds);
+    t = sizeof(struct sockaddr_un);
     if ((s = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
     {
         perror("socket");
@@ -60,7 +61,7 @@ int main(void)
         exit(1);
     }
 
-    if (listen(s, 2) == -1)
+    if (listen(s, 4) == -1)
     {
         perror("listen");
         exit(1);
@@ -83,7 +84,7 @@ int main(void)
                 if (i == s)   // listener
                 {
                     newfd = accept(s, (struct sockaddr*)&remote, &t);
-                    //  printf("\n\n %d \n \n",newfd);
+                    printf("\n\n %d \n \n",newfd);
                     movies[movie_arr_index++].sd = newfd;
                     if (newfd == -1)
                     {
@@ -91,6 +92,7 @@ int main(void)
                     }
                     else
                     {
+			printf("Success! connected. \n");
                         FD_SET(newfd, &master);
                         if (newfd > fdmax)
                         {
@@ -100,96 +102,77 @@ int main(void)
                 }
                 else
                 {
-                    //        printf("Request from : %d \n", i);
                     struct on_movies* the_movie = get_movie(movies, 2, i);
-                    //         printf("MOVIE : %d \n", the_movie->sd);
-                    n = recv(i, str, sizeof(str), 0);
-                    if (n <= 0)
-                    {
-                        if (n == 0)
-                        {
-                       //     close(i);
-                       //     FD_CLR(i, &master);
-                       //     close(the_movie->fd);
-                        }
-                    }
-                    else
-                    {
-                        switch (str[0])
+			if (recv(i, &choice, 1, 0) == -1) {
+				perror("recv");			
+			}
+                        switch (choice)
                         {
                         case 'r':
                         {
-                            str[n] = '\0';
-                            char* file_name = str + 12;
-                            strcpy(the_movie->name, file_name);
-                            //         printf("%s \n", file_name);
-                            if ( (the_movie->fd = open(the_movie->name, O_RDWR)) == -1)
-                            {
-                                printf("Failed. \n");
-                                str[0] = 'n';
-                            }
-                            else
-                            {
-                                str[0] = 'a';
-                            }
-                            if (send(i, str, BUFSIZE, 0) < 0)
-                            {
-                                perror("send");
-                            }
+				char file_name[30];
+				int name_len;
+				if (recv(i, &name_len, sizeof(int), 0) == -1) {
+					perror("recv");
+				}
+				printf("%d \n", name_len);
+				if (recv(i, file_name, name_len, 0) == -1) {
+					perror("recv");				
+				}
+				file_name[name_len] ='\0';
+				printf("%s \n", file_name);
+				strcpy(the_movie->name, file_name + 11);
+				printf("%s \n", the_movie->name);
+				the_movie->fd = open(the_movie->name, O_RDWR);
+				if (the_movie->fd >= 0) {
+					char result = 'a';
+					if (send(i, &result, 1, 0) < 0) {
+						perror("send");					
+					}
+				}
+				
                         }
                         break;
                         case 'f':
                         {
-
-                            //         printf("Read request! socket : %d \n", i);
-                            int size = 0;
-                            memcpy(&size, str + 1, sizeof(int));
-                            ssize_t nbytes_read = 0;
-                            //       printf("movie_name : %s \n", the_movie->name);
-                            //         printf("socket number : %d \n", the_movie->sd);
-                            //         printf("i : %d \n", i);
-               //             printf("Data size given : %d \n", size);
-                            while (size > 0)
-                            {
-                                if (size >= BUFSIZE - 4)
-                                    nbytes_read = read(the_movie->fd, temp, BUFSIZE - 4);
-                                else
-                                    nbytes_read = read(the_movie->fd, temp, size);
-
-                                if (0 == strcmp(the_movie->name, "boy_named_sue.avi")) {
-                                          printf("bytes read = %d \n", nbytes_read);
-                                }       
-                                //      printf("Bytes read : %d \n", nbytes_read);
-                                memcpy(str, &nbytes_read, sizeof(ssize_t));
-                                memcpy(str + sizeof(int), temp, nbytes_read);
-                 //               if (0 == strcmp(the_movie->name, "boy_named_sue.avi")) {
-                 //                       printf("Sent to bns.avi : socket - %d , fd - %d \n", the_movie->sd, the_movie->fd);
-                 //               } else {
-                //                        printf("Sent to francegall.avi : socket - %d , fd - %d \n", the_movie->sd, the_movie->fd);
-                  //              }
-                                if (send(i, str, BUFSIZE, 0) < 0)
-                                {
-                                    perror("send");
-                                }
-                                size -= nbytes_read;
-                            }
+				int buffer_size;
+				if (recv(i, &buffer_size, sizeof(int), 0) == -1) {
+					perror("recv");				
+				}
+				char* buf = (char*) malloc(buffer_size);
+				int nbytes = read(the_movie->fd, buf, buffer_size);
+				if (send(i, &nbytes, sizeof(int), 0) < 0) {
+					perror("send");			
+				}
+				if (send(i, buf, nbytes, 0) < 0) {
+					perror("send");				
+				}
+				free(buf);
                         }
                         break;
                         case 's':
                         {
-                                int64_t pos; int whence;
-                                memcpy(&pos, str + 1, sizeof(int64_t));
-                                memcpy(&whence, str + sizeof(int64_t) + 1, sizeof(int));
-                                int64_t result = lseek(the_movie->fd, pos, whence);
-                                memcpy(str, &result, sizeof(int64_t));
-                                if (send(i, str, BUFSIZE, 0) < 0) {
-                                        perror("send");
-                                }
+				int64_t pos; int whence;
+				if (recv(i, &pos, sizeof(int64_t), 0) == -1) {
+					perror("recv");				
+				}	
+				if (recv(i, &whence, sizeof(int), 0) == -1) {
+					perror("recv");
+				}
+				int64_t result = lseek(the_movie->fd, pos, whence);
+				if (send(i, &result, sizeof(int64_t), 0) == -1) {
+					perror("send");				
+				}
                         }
                         break;
+			case 'c':
+				close(the_movie->fd);
+				close(the_movie->sd);
+				FD_CLR(i, &master);
+			break;
                         }
                     }
-                }
+               
             }
         }
     }
